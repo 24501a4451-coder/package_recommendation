@@ -1,0 +1,6 @@
+{
+  "name": "FOODPACK-AI: Intelligent Food Packaging Decision Platform",
+  "description": "Multi-level intelligent food packaging recommendation system for fresh produce, food service takeaways, packaged startups, and research technologists (SIH26236).",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

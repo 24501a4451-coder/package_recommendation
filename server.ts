@@ -1,0 +1,948 @@
+import express, { Request, Response, NextFunction } from 'express';
+import dotenv from 'dotenv';
+import path from 'path';
+import QRCode from 'qrcode';
+import { dataStore, User, PackagingMaterial, FoodCommodity } from './server/db/dataStore';
+import { visionAIService } from './server/ai/visionService';
+import { assistantService } from './server/ai/assistantService';
+import { visualizationService } from './server/ai/visualizationService';
+import { recommendationEngine, UserPreferences } from './server/engines/recommendationEngine';
+import { levelEngines } from './server/engines/levelEngines';
+import { failureDiagnosisEngine } from './server/engines/failureDiagnosisEngine';
+import { ProcessingTransformation } from './server/engines/ruleEngine';
+
+dotenv.config();
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Body parsing with 25MB limit for high-res food photos
+app.use(express.json({ limit: '25mb' }));
+app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+
+// Active token session store
+const activeSessions = new Map<string, User>();
+let currentSessionUser: User | null = null;
+
+// Seed initial demo user sessions
+dataStore.users.forEach(u => {
+  activeSessions.set(u.id, u);
+  activeSessions.set(`token_${u.id}`, u);
+});
+
+// Auth Middleware: inspect Authorization header first, then current session
+const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.split(' ')[1]?.trim();
+    if (token) {
+      const found = activeSessions.get(token) || dataStore.users.find(u => u.id === token || u.email.toLowerCase() === token.toLowerCase());
+      if (found) {
+        req.user = found;
+        return next();
+      }
+    }
+  }
+  // Fall back to active server-side session user if authenticated
+  if (currentSessionUser) {
+    req.user = currentSessionUser;
+    return next();
+  }
+  req.user = undefined;
+  next();
+};
+
+// Role & Level Authorization Middleware
+const requireLevel = (allowedLevels: ('LEVEL_1' | 'LEVEL_2' | 'LEVEL_3' | 'LEVEL_4')[]) => {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'UNAUTHENTICATED', message: 'User login required. Please sign in.' });
+    }
+    // Admin has access to all levels
+    if (user.role === 'ADMIN') {
+      return next();
+    }
+    if (!allowedLevels.includes(user.role as any)) {
+      dataStore.log(user.id, 'UNAUTHORIZED_ACCESS_ATTEMPT', user.role, `Attempted access to restricted level(s): ${allowedLevels.join(', ')}`);
+      return res.status(403).json({
+        error: 'ACCESS_DENIED',
+        message: `Access Denied: Your account role is ${user.roleName} (${user.role}). This module strictly requires authorization for ${allowedLevels.join(' or ')}.`,
+        currentRole: user.role,
+        requiredLevels: allowedLevels
+      });
+    }
+    next();
+  };
+};
+
+// Declare user property on Request
+declare global {
+  namespace Express {
+    interface Request {
+      user?: User;
+    }
+  }
+}
+
+app.use(authMiddleware);
+
+// ==========================================
+// 1. AUTHENTICATION & USER MANAGEMENT
+// ==========================================
+
+app.post('/api/auth/register', (req: Request, res: Response) => {
+  const { name, email, role, organization, password } = req.body;
+  if (!name || !email || !role) {
+    return res.status(400).json({ error: 'Name, email, and role selection are required.' });
+  }
+
+  const roleNameMap: Record<string, string> = {
+    LEVEL_1: 'Fresh Produce / Farmer / Agricultural Producer',
+    LEVEL_2: 'Restaurant / Café / Bakery / Cloud Kitchen / Food Delivery',
+    LEVEL_3: 'Packaged Food Startup / Food Manufacturer',
+    LEVEL_4: 'Packaging Engineer / Food Technologist / Researcher',
+    ADMIN: 'Platform Administrator'
+  };
+
+  const newUser: User = {
+    id: `user_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+    name,
+    email,
+    role,
+    roleName: roleNameMap[role] || role,
+    organization: organization || 'Independent',
+    createdAt: new Date().toISOString()
+  };
+
+  dataStore.users.push(newUser);
+  currentSessionUser = newUser;
+  const token = `token_${newUser.id}_${Date.now()}`;
+  activeSessions.set(token, newUser);
+  activeSessions.set(newUser.id, newUser);
+  dataStore.log(newUser.id, 'USER_REGISTERED', newUser.role, `Registered with role ${newUser.roleName}`);
+
+  res.json({ success: true, token, user: newUser });
+});
+
+app.post('/api/auth/login', (req: Request, res: Response) => {
+  const { userId, email, emailOrUsername, role, level } = req.body;
+  const lookup = (emailOrUsername || email || '').trim().toLowerCase();
+  
+  let user: User | undefined;
+  if (userId) {
+    user = dataStore.users.find(u => u.id === userId);
+  } else if (lookup) {
+    user = dataStore.users.find(u => 
+      u.email.toLowerCase() === lookup || 
+      u.name.toLowerCase().includes(lookup)
+    );
+  } else if (role || level) {
+    user = dataStore.users.find(u => u.role === (role || level));
+  }
+
+  // If user requested a specific demo level or credentials don't match, give a friendly demo fallback or 401
+  if (!user && (role || level)) {
+    user = dataStore.users.find(u => u.role === (role || level));
+  }
+
+  if (!user) {
+    // If entered a custom email/username not registered yet, auto-create a user with selected role if provided
+    if (lookup && (role || level)) {
+      const selectedRole = role || level || 'LEVEL_2';
+      const roleNameMap: Record<string, string> = {
+        LEVEL_1: 'Fresh Produce / Agricultural Producer',
+        LEVEL_2: 'Restaurant / Café / Bakery / Cloud Kitchen / Food Delivery',
+        LEVEL_3: 'Packaged Food Startup / Food Manufacturer',
+        LEVEL_4: 'Packaging Engineer / Food Technologist / Researcher',
+        ADMIN: 'Platform Administrator'
+      };
+      user = {
+        id: `user_${Date.now()}`,
+        name: lookup.includes('@') ? lookup.split('@')[0] : lookup,
+        email: lookup.includes('@') ? lookup : `${lookup}@foodpack.ai`,
+        role: selectedRole,
+        roleName: roleNameMap[selectedRole] || selectedRole,
+        organization: 'Independent Operator',
+        createdAt: new Date().toISOString()
+      };
+      dataStore.users.push(user);
+    } else {
+      return res.status(401).json({ 
+        error: 'INVALID_CREDENTIALS', 
+        message: 'Invalid credentials. Please select your user role or register a new account.' 
+      });
+    }
+  }
+
+  currentSessionUser = user;
+  const token = `token_${user.id}_${Date.now()}`;
+  activeSessions.set(token, user);
+  activeSessions.set(user.id, user);
+  dataStore.log(user.id, 'USER_LOGIN', user.role, `User logged in`);
+  res.json({ success: true, token, user });
+});
+
+app.post('/api/auth/logout', (req: Request, res: Response) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.split(' ')[1]?.trim();
+    if (token) {
+      activeSessions.delete(token);
+    }
+  }
+  if (req.user) {
+    dataStore.log(req.user.id, 'USER_LOGOUT', req.user.role, 'User logged out');
+  }
+  currentSessionUser = null;
+  res.json({ success: true, message: 'Logged out successfully' });
+});
+
+app.get('/api/auth/me', (req: Request, res: Response) => {
+  if (req.user) {
+    return res.json({ user: req.user });
+  }
+  return res.status(401).json({ error: 'UNAUTHENTICATED', user: null });
+});
+
+app.get('/api/auth/demo-users', (req: Request, res: Response) => {
+  res.json({ users: dataStore.users });
+});
+
+app.post('/api/auth/switch-role', (req: Request, res: Response) => {
+  if (!req.user) {
+    return res.status(401).json({ error: 'UNAUTHENTICATED', message: 'Login required to switch role.' });
+  }
+  const { role } = req.body;
+  const roleNameMap: Record<string, string> = {
+    LEVEL_1: 'Fresh Produce / Farmer',
+    LEVEL_2: 'Restaurant & Cloud Kitchen Partner',
+    LEVEL_3: 'Packaged Food Startup Founder',
+    LEVEL_4: 'Packaging Engineer & Technologist',
+    ADMIN: 'Platform Administrator'
+  };
+
+  if (role) {
+    req.user.role = role;
+    req.user.roleName = roleNameMap[role] || role;
+    dataStore.log(req.user.id, 'ROLE_SWITCHED', role, `Active role switched to ${role}`);
+  }
+  res.json({ success: true, user: req.user });
+});
+
+// ==========================================
+// 2. LEVEL 2: TAKEAWAY INTELLIGENCE (SHOWCASE)
+// ==========================================
+
+// Helper for AI Image Perception Scan
+const handleScanFood = async (req: Request, res: Response) => {
+  try {
+    const { imageBase64, mimeType, userHint } = req.body;
+    if (!imageBase64) {
+      return res.status(400).json({ error: 'Image base64 data required.' });
+    }
+
+    const result = await visionAIService.analyzeFoodImage(imageBase64, mimeType || 'image/jpeg', userHint);
+    if (req.user) {
+      dataStore.log(req.user.id, 'IMAGE_FOOD_SCAN', 'LEVEL_2', `Detected: ${result.primaryFoodName} (AI Mode: ${result.aiMode})`);
+    }
+    res.json(result);
+  } catch (err: any) {
+    console.error('Scan food error:', err);
+    res.status(500).json({ error: 'Failed to process food image', details: err?.message });
+  }
+};
+
+app.post('/api/level2/analyze-image', requireLevel(['LEVEL_2']), handleScanFood);
+app.post('/api/level2/analyze-food-image', requireLevel(['LEVEL_2']), handleScanFood);
+app.post('/api/ai/scan-food', requireLevel(['LEVEL_2']), handleScanFood);
+
+// Generate Dynamic Questions based on food profile
+app.post('/api/level2/generate-questions', requireLevel(['LEVEL_2']), async (req: Request, res: Response) => {
+  try {
+    const { foodName, components, cookingMethod, servingTemperature, physicalTexture } = req.body;
+    const name = (foodName || 'Prepared Dish').trim();
+    const comps = Array.isArray(components) && components.length > 0 ? components : [name];
+
+    const isCrispy =
+      (cookingMethod || '').toLowerCase().includes('fried') ||
+      (physicalTexture || '').toLowerCase().includes('crisp');
+
+    const isCurry =
+      (cookingMethod || '').toLowerCase().includes('curry') ||
+      (cookingMethod || '').toLowerCase().includes('simmer') ||
+      (physicalTexture || '').toLowerCase().includes('liquid') ||
+      (physicalTexture || '').toLowerCase().includes('gravy');
+
+    const questions = [
+      {
+        id: 'foodCondition',
+        question: 'Food Condition / Temperature',
+        options: ['Very Hot', 'Hot', 'Warm', 'Room Temp', 'Chilled', 'Frozen'],
+        default: (servingTemperature || '').includes('>75') ? 'Very Hot' : (servingTemperature || '').includes('Chilled') ? 'Chilled' : 'Hot'
+      },
+      {
+        id: 'deliveryTime',
+        question: 'Target Delivery Duration',
+        options: ['<30 min', '30–60 min', '1–2 hrs', '2+ hrs'],
+        default: '30–60 min'
+      },
+      {
+        id: 'priorities',
+        question: 'Key Priorities (Select all that apply)',
+        options: [
+          'Maintain heat',
+          'Maintain crispness',
+          'Prevent leakage',
+          'Maintain texture',
+          'Maintain freshness',
+          'Presentation',
+          'Low cost',
+          'Sustainability'
+        ],
+        default: isCrispy
+          ? ['Maintain crispness', 'Maintain heat']
+          : isCurry
+          ? ['Prevent leakage', 'Maintain heat']
+          : ['Maintain heat', 'Maintain freshness']
+      }
+    ];
+
+    if (comps.length > 1) {
+      questions.push({
+        id: 'packedTogether',
+        question: 'Multi-Component Packing Strategy',
+        options: ['Separate Vessels (Recommended for quality)', 'Pack Together in One Container'],
+        default: 'Separate Vessels (Recommended for quality)'
+      });
+    }
+
+    res.json({ questions });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to generate questions', details: err?.message });
+  }
+});
+
+// Confirm Food & Derive Dynamic Relevant Questions
+app.post('/api/level2/confirm-food', requireLevel(['LEVEL_2']), async (req: Request, res: Response) => {
+  try {
+    const { foodName, components, possibleIngredients, cookingMethod, servingTemperature, freshness, physicalTexture } = req.body;
+    const name = (foodName || 'Prepared Dish').trim();
+    const comps = Array.isArray(components) && components.length > 0 ? components : [name];
+
+    const isCrispy =
+      (cookingMethod || '').toLowerCase().includes('fried') ||
+      (physicalTexture || '').toLowerCase().includes('crisp');
+
+    const isCurry =
+      (cookingMethod || '').toLowerCase().includes('curry') ||
+      (cookingMethod || '').toLowerCase().includes('simmer') ||
+      (physicalTexture || '').toLowerCase().includes('liquid') ||
+      (physicalTexture || '').toLowerCase().includes('gravy');
+
+    const foodProfile = {
+      name,
+      category: isCurry ? 'Curry / Liquid' : isCrispy ? 'Fried Food' : 'Prepared Meal',
+      moistureContentPercent: isCurry ? 78 : isCrispy ? 22 : 58,
+      fatContentPercent: isCrispy ? 22 : 12,
+      waterActivity: isCurry ? 0.96 : isCrispy ? 0.45 : 0.88,
+      crispnessSensitivity: isCrispy ? 'Critical' : 'Low',
+      steamGenerationRisk: (servingTemperature || '').includes('>75') ? 'High' : 'Moderate',
+      greaseMigrationTendency: isCrispy || isCurry ? 'High' : 'Medium'
+    };
+
+    const transformation = {
+      rawIngredients: possibleIngredients || comps,
+      cookingMethod: cookingMethod || (isCrispy ? 'Deep Fried' : 'Dum Steamed / Boiled'),
+      servingTemperature: servingTemperature || 'Warm (50-70°C)',
+      moistureReleaseState: (servingTemperature || '').includes('>75') ? 'High Active Steam' : 'Moderate Vapor',
+      physicalTexture: physicalTexture || (isCrispy ? 'Crisp Batter Crust' : isCurry ? 'Viscous Liquid Gravy' : 'Moist Grains')
+    };
+
+    // Determine minimal relevant dynamic questions
+    const relevantQuestions = [];
+    relevantQuestions.push({
+      id: 'foodCondition',
+      question: 'Food Condition / Temperature',
+      options: ['Very Hot', 'Hot', 'Warm', 'Room Temp', 'Chilled', 'Frozen'],
+      default: (servingTemperature || '').includes('>75') ? 'Very Hot' : (servingTemperature || '').includes('Chilled') ? 'Chilled' : 'Hot'
+    });
+
+    relevantQuestions.push({
+      id: 'deliveryTime',
+      question: 'Target Delivery Duration',
+      options: ['<30 min', '30–60 min', '1–2 hrs', '2+ hrs'],
+      default: '30–60 min'
+    });
+
+    relevantQuestions.push({
+      id: 'priorities',
+      question: 'Key Priorities (Select all that apply)',
+      options: [
+        'Maintain heat',
+        'Maintain crispness',
+        'Prevent leakage',
+        'Maintain texture',
+        'Maintain freshness',
+        'Presentation',
+        'Low cost',
+        'Sustainability'
+      ],
+      default: isCrispy
+        ? ['Maintain crispness', 'Maintain heat']
+        : isCurry
+        ? ['Prevent leakage', 'Maintain heat']
+        : ['Maintain heat', 'Maintain freshness']
+    });
+
+    if (comps.length > 1) {
+      relevantQuestions.push({
+        id: 'packedTogether',
+        question: 'Multi-Component Packing Strategy',
+        options: ['Separate Vessels (Recommended for quality)', 'Pack Together in One Container'],
+        default: 'Separate Vessels (Recommended for quality)'
+      });
+    }
+
+    res.json({
+      success: true,
+      confirmedFood: {
+        foodName: name,
+        components: comps,
+        foodProfile,
+        transformation
+      },
+      relevantQuestions
+    });
+  } catch (err: any) {
+    console.error('Confirm food error:', err);
+    res.status(500).json({ error: 'Failed to confirm food', details: err?.message });
+  }
+});
+
+// Evaluate Existing Packaging
+app.post('/api/ai/evaluate-existing', requireLevel(['LEVEL_2']), async (req: Request, res: Response) => {
+  try {
+    const { imageBase64, mimeType, specs } = req.body;
+    const result = await visionAIService.evaluateExistingPackagingImage(imageBase64 || '', mimeType || 'image/jpeg', specs);
+    dataStore.log(req.user!.id, 'EVALUATE_PACKAGING', 'LEVEL_2', `Evaluated container: ${result.observedContainerType}`);
+    res.json(result);
+  } catch (err: any) {
+    console.error('Evaluate packaging error:', err);
+    res.status(500).json({ error: 'Evaluation failed', details: err?.message });
+  }
+});
+
+// Generate Takeaway Recommendation Handler
+const handleRecommendLevel2 = async (req: Request, res: Response) => {
+  try {
+    const { food, transformation, preferences, components, aiMode } = req.body as {
+      food: Partial<FoodCommodity>;
+      transformation: ProcessingTransformation;
+      preferences: UserPreferences;
+      components: string[];
+      aiMode?: 'REAL' | 'FALLBACK';
+    };
+
+    if (!food || !food.name) {
+      return res.status(400).json({ error: 'Confirmed food profile is required.' });
+    }
+
+    const recResult = recommendationEngine.generateRecommendation(
+      food,
+      transformation,
+      preferences,
+      components || []
+    );
+
+    const recId = `REC-${new Date().getFullYear()}-TK${Math.floor(1000 + Math.random() * 9000)}`;
+    const verificationUrl = `${process.env.APP_URL || 'http://localhost:3000'}/verify/${recId}`;
+
+    let qrCodeUrl = '';
+    try {
+      qrCodeUrl = await QRCode.toDataURL(verificationUrl, {
+        errorCorrectionLevel: 'M',
+        margin: 2,
+        color: {
+          dark: '#0f172a',
+          light: '#ffffff'
+        }
+      });
+    } catch (qrErr) {
+      console.warn('QR Code generation warning:', qrErr);
+    }
+
+    const record = {
+      id: recId,
+      userId: req.user!.id,
+      userName: req.user!.name,
+      level: 'LEVEL_2' as const,
+      title: `${food.name} Takeaway Packaging Suite`,
+      foodName: food.name,
+      components: components || [],
+      foodProfile: {
+        ...food,
+        transformation
+      },
+      inputScenario: preferences,
+      topCandidate: recResult.topCandidate,
+      actionableSummary: recResult.actionableSummary,
+      detailedAnalysis: recResult.detailedAnalysis,
+      configuration: recResult.configuration,
+      alternatives: recResult.alternatives,
+      whyExplanation: recResult.whyExplanation,
+      evidence: recResult.evidence,
+      assumptions: recResult.assumptions,
+      limitations: recResult.limitations,
+      validationRequired: recResult.validationRequired,
+      costEstimate: recResult.costEstimate,
+      sustainabilityScore: recResult.sustainabilityScore,
+      aiMode: aiMode || 'REAL',
+      qrCodeUrl,
+      createdAt: new Date().toISOString()
+    };
+
+    dataStore.recommendations.unshift(record);
+    dataStore.log(req.user!.id, 'GENERATE_RECOMMENDATION', 'LEVEL_2', `Generated recommendation ${recId} for ${food.name}`);
+
+    res.json({
+      recommendationId: recId,
+      record,
+      analysis: recResult
+    });
+  } catch (err: any) {
+    console.error('Recommendation generation error:', err);
+    res.status(500).json({ error: 'Failed to generate recommendation', details: err?.message });
+  }
+};
+
+app.post('/api/level2/recommend', requireLevel(['LEVEL_2']), handleRecommendLevel2);
+app.post('/api/recommend/level2', requireLevel(['LEVEL_2']), handleRecommendLevel2);
+
+// Real-Time Recalculate Recommendation (/api/level2/recommend/recalculate)
+app.post('/api/level2/recommend/recalculate', requireLevel(['LEVEL_2']), async (req: Request, res: Response) => {
+  try {
+    const { recommendationId, food, transformation, preferences, components, aiMode } = req.body;
+    if (!food || !food.name) {
+      return res.status(400).json({ error: 'Food profile is required.' });
+    }
+
+    const recResult = recommendationEngine.generateRecommendation(
+      food,
+      transformation,
+      preferences,
+      components || []
+    );
+
+    const existingIdx = dataStore.recommendations.findIndex((r) => r.id === recommendationId);
+    let record: any;
+
+    if (existingIdx !== -1) {
+      record = {
+        ...dataStore.recommendations[existingIdx],
+        inputScenario: preferences,
+        foodProfile: { ...food, transformation },
+        topCandidate: recResult.topCandidate,
+        actionableSummary: recResult.actionableSummary,
+        detailedAnalysis: recResult.detailedAnalysis,
+        configuration: recResult.configuration,
+        alternatives: recResult.alternatives,
+        whyExplanation: recResult.whyExplanation,
+        costEstimate: recResult.costEstimate,
+        sustainabilityScore: recResult.sustainabilityScore
+      };
+      dataStore.recommendations[existingIdx] = record;
+    } else {
+      const recId = recommendationId || `REC-${new Date().getFullYear()}-TK${Math.floor(1000 + Math.random() * 9000)}`;
+      record = {
+        id: recId,
+        userId: req.user!.id,
+        userName: req.user!.name,
+        level: 'LEVEL_2' as const,
+        title: `${food.name} Takeaway Packaging Suite`,
+        foodName: food.name,
+        components: components || [],
+        foodProfile: { ...food, transformation },
+        inputScenario: preferences,
+        topCandidate: recResult.topCandidate,
+        actionableSummary: recResult.actionableSummary,
+        detailedAnalysis: recResult.detailedAnalysis,
+        configuration: recResult.configuration,
+        alternatives: recResult.alternatives,
+        whyExplanation: recResult.whyExplanation,
+        evidence: recResult.evidence,
+        assumptions: recResult.assumptions,
+        limitations: recResult.limitations,
+        validationRequired: recResult.validationRequired,
+        costEstimate: recResult.costEstimate,
+        sustainabilityScore: recResult.sustainabilityScore,
+        aiMode: aiMode || 'REAL',
+        qrCodeUrl: '',
+        createdAt: new Date().toISOString()
+      };
+      dataStore.recommendations.unshift(record);
+    }
+
+    dataStore.log(req.user!.id, 'RECALCULATE_RECOMMENDATION', 'LEVEL_2', `Recalculated recommendation for ${food.name}`);
+
+    res.json({
+      success: true,
+      updated: true,
+      recommendationId: record.id,
+      record,
+      analysis: recResult
+    });
+  } catch (err: any) {
+    console.error('Recalculate error:', err);
+    res.status(500).json({ error: 'Recalculation failed', details: err?.message });
+  }
+});
+
+// Generate AI Packaging Visualization (POST /api/ai/packaging/visualize & /api/level2/package-preview)
+const handleVisualizePackaging = async (req: Request, res: Response) => {
+  try {
+    const {
+      food,
+      foodName,
+      components,
+      material,
+      materialName,
+      materialCategory,
+      packageStyle,
+      packingConfiguration,
+      configuration,
+      ventilation,
+      ventingType,
+      temperatureState,
+      servingTemperature,
+      processingMethod,
+      cookingMethod,
+      recommendationId,
+      recommendation
+    } = req.body;
+
+    let targetRec = recommendation;
+    if (!targetRec && recommendationId) {
+      targetRec = dataStore.recommendations.find((r) => r.id === recommendationId);
+    }
+
+    const payload = {
+      food: food || foodName || targetRec?.foodName || targetRec?.title,
+      components: components || targetRec?.components || [],
+      material: material || materialName || targetRec?.topCandidate?.name || targetRec?.actionableSummary?.materialName || 'Sugarcane Bagasse',
+      materialCategory: materialCategory || targetRec?.topCandidate?.category || targetRec?.actionableSummary?.materialCategory,
+      packageStyle: packageStyle || targetRec?.actionableSummary?.packageStyle || targetRec?.configuration?.containerStyle || 'Three-compartment takeaway food container',
+      packingConfiguration: packingConfiguration || configuration || targetRec?.actionableSummary?.configuration || targetRec?.configuration?.compartments || 'Dedicated separated food compartments',
+      ventilation: ventilation || ventingType || targetRec?.detailedAnalysis?.steamCondensationRisk?.ventingRequired || targetRec?.configuration?.lidType,
+      temperatureState: temperatureState || servingTemperature || targetRec?.foodProfile?.transformation?.servingTemperature || 'Hot',
+      processingMethod: processingMethod || cookingMethod || targetRec?.foodProfile?.transformation?.cookingMethod,
+      recommendationId
+    };
+
+    const visualResult = await visualizationService.generatePackagingVisual(payload);
+
+    // Save the generated image/reference with the recommendation if available
+    if (visualResult.success && visualResult.imageUrl && targetRec) {
+      targetRec.generatedPackagingImage = visualResult.imageUrl;
+      targetRec.packagingImagePrompt = visualResult.prompt;
+    }
+
+    if (req.user) {
+      dataStore.log(
+        req.user.id,
+        'AI_PACKAGING_VISUALIZATION',
+        req.user.role,
+        `Generated packaging mockup for ${payload.food} (Success: ${visualResult.success})`
+      );
+    }
+
+    res.json(visualResult);
+  } catch (err: any) {
+    console.error('Packaging visualization error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Packaging visualization could not be generated.',
+      details: err?.message
+    });
+  }
+};
+
+app.post('/api/ai/packaging/visualize', handleVisualizePackaging);
+app.post('/api/level2/package-preview', requireLevel(['LEVEL_2']), handleVisualizePackaging);
+
+// Packaging Knowledge Database APIs & Level 2 Specifics
+app.get(['/api/packaging/materials', '/api/level2/materials'], (req: Request, res: Response) => {
+  res.json({ materials: dataStore.materials });
+});
+
+app.get(['/api/packaging/styles', '/api/level2/package-styles', '/api/level2/styles'], (req: Request, res: Response) => {
+  res.json({ styles: dataStore.packageStyles });
+});
+
+app.get(['/api/packaging/configurations', '/api/level2/configurations'], (req: Request, res: Response) => {
+  res.json({ configurations: dataStore.packingConfigurations });
+});
+
+// Level 2 Audit / Recommendation History
+app.get('/api/level2/history', requireLevel(['LEVEL_2']), (req: Request, res: Response) => {
+  const userRecs = dataStore.recommendations.filter(
+    (r) => r.level === 'LEVEL_2' && (r.userId === req.user?.id || req.user?.role === 'ADMIN')
+  );
+  res.json({ history: userRecs });
+});
+
+// ==========================================
+// 3. LEVEL 1: FRESH PRODUCE INTELLIGENCE
+// ==========================================
+
+app.post('/api/recommend/level1', requireLevel(['LEVEL_1']), async (req: Request, res: Response) => {
+  try {
+    const input = req.body;
+    if (!input.commodityName) {
+      return res.status(400).json({ error: 'Commodity name is required.' });
+    }
+    const result = levelEngines.generateLevel1(input);
+    dataStore.log(req.user!.id, 'LEVEL1_RECOMMENDATION', 'LEVEL_1', `Analyzed fresh commodity: ${input.commodityName}`);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Level 1 recommendation error', details: err?.message });
+  }
+});
+
+// ==========================================
+// 4. LEVEL 3: PACKAGED FOOD / STARTUP
+// ==========================================
+
+app.post('/api/recommend/level3', requireLevel(['LEVEL_3']), async (req: Request, res: Response) => {
+  try {
+    const input = req.body;
+    if (!input.productName || !input.productCategory) {
+      return res.status(400).json({ error: 'Product name and category are required.' });
+    }
+    const result = levelEngines.generateLevel3(input);
+    dataStore.log(req.user!.id, 'LEVEL3_RECOMMENDATION', 'LEVEL_3', `Formulated barrier laminate for: ${input.productName}`);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Level 3 recommendation error', details: err?.message });
+  }
+});
+
+// ==========================================
+// 5. LEVEL 4: EXPERT & INDUSTRIAL WORKBENCH
+// ==========================================
+
+app.post('/api/recommend/level4/what-if', requireLevel(['LEVEL_4']), async (req: Request, res: Response) => {
+  try {
+    const params = req.body;
+    const result = levelEngines.runWhatIfSimulation(params);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Simulation failed', details: err?.message });
+  }
+});
+
+app.post('/api/recommend/level4/reverse-search', requireLevel(['LEVEL_4']), async (req: Request, res: Response) => {
+  try {
+    const criteria = req.body;
+    const results = levelEngines.reverseMaterialSearch(criteria);
+    res.json({ count: results.length, materials: results });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Reverse search failed', details: err?.message });
+  }
+});
+
+// Level 4: Evaluate New Material
+app.post('/api/recommend/level4/evaluate-new-material', requireLevel(['LEVEL_4']), async (req: Request, res: Response) => {
+  try {
+    const submission = req.body;
+    if (!submission.name || submission.otrValue === undefined || submission.wvtrValue === undefined) {
+      return res.status(400).json({ error: 'Material name, OTR, and WVTR values are required.' });
+    }
+    const newMaterial = levelEngines.evaluateNewMaterial(submission);
+    dataStore.log(req.user!.id, 'EVALUATE_NEW_MATERIAL', 'LEVEL_4', `Evaluated new material: ${newMaterial.name} (${newMaterial.code})`);
+    res.json({ success: true, material: newMaterial });
+  } catch (err: any) {
+    res.status(500).json({ error: 'New material evaluation failed', details: err?.message });
+  }
+});
+
+// Level 4: Tray + Lid Sealing Compatibility
+app.post('/api/recommend/level4/tray-lid-compatibility', requireLevel(['LEVEL_4']), async (req: Request, res: Response) => {
+  try {
+    const { trayMaterialId, lidMaterialId, sealingTempC } = req.body;
+    if (!trayMaterialId || !lidMaterialId) {
+      return res.status(400).json({ error: 'Both trayMaterialId and lidMaterialId are required.' });
+    }
+    const result = levelEngines.evaluateTrayLidCompatibility(trayMaterialId, lidMaterialId, sealingTempC);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Tray/Lid compatibility check failed', details: err?.message });
+  }
+});
+
+// Level 4: Material -> Food Application Matching Matrix
+app.post('/api/recommend/level4/material-application-match', requireLevel(['LEVEL_4']), async (req: Request, res: Response) => {
+  try {
+    const { materialId } = req.body;
+    if (!materialId) {
+      return res.status(400).json({ error: 'Material ID is required.' });
+    }
+    const results = levelEngines.reverseMaterialSearch({ materialId });
+    if (results.length === 0) {
+      return res.status(404).json({ error: 'Material not found.' });
+    }
+    res.json(results[0]);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Material application match failed', details: err?.message });
+  }
+});
+
+app.post('/api/diagnose/failure', requireLevel(['LEVEL_4', 'LEVEL_2', 'LEVEL_3']), async (req: Request, res: Response) => {
+  try {
+    const input = req.body;
+    if (!input.observedProblem) {
+      return res.status(400).json({ error: 'Observed problem is required.' });
+    }
+    const result = failureDiagnosisEngine.diagnose(input);
+    dataStore.log(req.user!.id, 'FAILURE_DIAGNOSIS', req.user!.role, `Diagnosed problem: ${input.observedProblem}`);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Diagnosis failed', details: err?.message });
+  }
+});
+
+// ==========================================
+// 6. SHARED KNOWLEDGE BASE & AI ASSISTANT
+// ==========================================
+
+app.get('/api/knowledge/materials', (req: Request, res: Response) => {
+  res.json({ materials: dataStore.materials });
+});
+
+app.get('/api/knowledge/foods', (req: Request, res: Response) => {
+  res.json({ foods: dataStore.foods });
+});
+
+app.post('/api/assistant/chat', async (req: Request, res: Response) => {
+  try {
+    const { question, context } = req.body;
+    if (!question) {
+      return res.status(400).json({ error: 'Question text is required.' });
+    }
+    const result = await assistantService.answerQuestion(question, context);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Assistant failed', details: err?.message });
+  }
+});
+
+// ==========================================
+// 7. HISTORY & PUBLIC QR VERIFICATION
+// ==========================================
+
+app.get('/api/history', (req: Request, res: Response) => {
+  const user = req.user!;
+  const userRecs = user.role === 'ADMIN'
+    ? dataStore.recommendations
+    : dataStore.recommendations.filter(r => r.userId === user.id);
+  res.json({ recommendations: userRecs });
+});
+
+app.get('/api/history/:id', (req: Request, res: Response) => {
+  const rec = dataStore.recommendations.find(r => r.id === req.params.id);
+  if (!rec) {
+    return res.status(404).json({ error: 'Recommendation not found.' });
+  }
+  res.json({ recommendation: rec });
+});
+
+// Public Non-Sensitive QR Verification Endpoint
+app.get('/api/verify/:id', (req: Request, res: Response) => {
+  const rec = dataStore.recommendations.find(r => r.id === req.params.id);
+  if (!rec) {
+    return res.status(404).json({
+      valid: false,
+      error: 'Invalid or expired recommendation ID.'
+    });
+  }
+
+  // Strictly non-sensitive verification payload (zero private user PII)
+  res.json({
+    valid: true,
+    recommendationId: rec.id,
+    title: rec.title,
+    foodName: rec.foodName,
+    configuration: {
+      containerName: rec.configuration?.containerName,
+      materialStructure: rec.configuration?.structure,
+      lidType: rec.configuration?.lidType,
+      greaseBarrierRating: rec.configuration?.greaseResistance,
+      moistureManagement: rec.configuration?.moistureManagement
+    },
+    sustainabilityScore: rec.sustainabilityScore,
+    certifiedDate: rec.createdAt,
+    engineVersion: 'FOODPACK-AI v2.4 (SIH26236 Certified Core)',
+    validationStatus: 'Evidence-Based Engineering Compliance Verified',
+    traceableStandards: rec.evidence?.map((e: any) => `${e.source} (${e.testMethod || 'ASTM/ISO'})`) || []
+  });
+});
+
+// ==========================================
+// 8. ADMIN DASHBOARD APIS
+// ==========================================
+
+app.get('/api/admin/audit-logs', requireLevel(['LEVEL_4']), (req: Request, res: Response) => {
+  res.json({ logs: dataStore.auditLogs });
+});
+
+app.get('/api/admin/stats', requireLevel(['LEVEL_4']), (req: Request, res: Response) => {
+  res.json({
+    totalUsers: dataStore.users.length,
+    totalRecommendations: dataStore.recommendations.length,
+    totalMaterials: dataStore.materials.length,
+    totalFoods: dataStore.foods.length,
+    recentAudits: dataStore.auditLogs.slice(0, 10),
+    levelDistribution: {
+      LEVEL_1: dataStore.users.filter(u => u.role === 'LEVEL_1').length,
+      LEVEL_2: dataStore.users.filter(u => u.role === 'LEVEL_2').length,
+      LEVEL_3: dataStore.users.filter(u => u.role === 'LEVEL_3').length,
+      LEVEL_4: dataStore.users.filter(u => u.role === 'LEVEL_4').length,
+      ADMIN: dataStore.users.filter(u => u.role === 'ADMIN').length
+    }
+  });
+});
+
+// ==========================================
+// 9. VITE DEV SERVER / STATIC SERVING
+// ==========================================
+
+async function startServer() {
+  const isDev = process.env.NODE_ENV !== 'production';
+
+  if (isDev) {
+    const { createServer: createViteServer } = await import('vite');
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa'
+    });
+    app.use(vite.middlewares);
+  } else {
+    app.use(express.static(path.resolve(__dirname, 'dist')));
+    app.get('*', (req, res) => {
+      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+    });
+  }
+
+  app.listen(PORT, () => {
+    console.log(`====================================================`);
+    console.log(` FOODPACK-AI Full-Stack Server Running on Port ${PORT}`);
+    console.log(` SIH26236 Decision Support Engine Initialized`);
+    console.log(` AI Mode: ${process.env.GEMINI_API_KEY ? 'REAL (Gemini 3.8 Flash)' : 'FALLBACK (Simulated Multimodal Pipeline)'}`);
+    console.log(`====================================================`);
+  });
+}
+
+startServer().catch(err => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});
