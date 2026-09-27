@@ -101,6 +101,8 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
   const isSpeakingRef = useRef(false);
   const lastSpeechTimeRef = useRef(Date.now());
   const speechDetectedRef = useRef(false);
+  const currentContextRef = useRef<FarmerConversationContext>(currentContext);
+  const messagesRef = useRef<ConversationTurn[]>(messages);
 
   useEffect(() => {
     callActiveRef.current = callActive;
@@ -113,6 +115,14 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
   useEffect(() => {
     selectedLangRef.current = selectedLanguage;
   }, [selectedLanguage]);
+
+  useEffect(() => {
+    currentContextRef.current = currentContext;
+  }, [currentContext]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   // Call duration timer
   useEffect(() => {
@@ -352,13 +362,13 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
           setCallSubState('idle');
           resolve();
 
-          // Immediately transition back to active listening for continuous conversational flow
+          // Transition back to active listening after a safe delay so speaker audio doesn't loop
           if (callActiveRef.current && !micMutedRef.current) {
             setTimeout(() => {
-              if (callActiveRef.current && !micMutedRef.current) {
+              if (callActiveRef.current && !micMutedRef.current && !isSpeakingRef.current) {
                 startListeningSession();
               }
-            }, 300);
+            }, 500);
           }
         };
 
@@ -551,8 +561,15 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
       content: text,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
-    const updatedMessages = [...messages, farmerMsg];
+    const baseHistory = messagesRef.current.length > 0 ? messagesRef.current : messages;
+    const updatedMessages = [...baseHistory, farmerMsg];
+    messagesRef.current = updatedMessages;
     setMessages(updatedMessages);
+
+    const activeContext = {
+      ...(currentContextRef.current || {}),
+      ...(currentContext || {})
+    };
 
     try {
       const res = await apiFetch('/api/voice/farmer-converse', {
@@ -561,7 +578,7 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
         body: JSON.stringify({
           message: text,
           history: updatedMessages,
-          currentContext,
+          currentContext: activeContext,
           language: selectedLangRef.current
         })
       });
@@ -585,10 +602,13 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
         content: assistantReply,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
-      setMessages((prev) => [...prev, assistantMsg]);
+      const finalMessages = [...updatedMessages, assistantMsg];
+      messagesRef.current = finalMessages;
+      setMessages(finalMessages);
 
       // Update structured context
       if (data.updatedContext) {
+        currentContextRef.current = data.updatedContext;
         setCurrentContext(data.updatedContext);
         if (onSyncParameters) {
           onSyncParameters({
@@ -641,6 +661,14 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
     micMutedRef.current = false;
     setCallMinimized(false);
 
+    // If starting fresh or prior harvest completed, initialize clean context
+    if (recommendation || !currentContextRef.current.commodity) {
+      currentContextRef.current = {};
+      setCurrentContext({});
+      setRecommendation(null);
+      setDetailedReport(null);
+    }
+
     const greetings: Record<string, string> = {
       en: "Namaste! I'm your Kisan Packaging Buddy. Tell me what crop you are harvesting, and where or how far you plan to transport it.",
       te: "నమస్కారం! నేను మీ కిసాన్ ప్యాకేజింగ్ మిత్రుడిని. మీరు ఏ పంటను ప్యాక్ చేయాలనుకుంటున్నారు? మార్కెట్‌కు ఎన్ని రోజులు పడుతుంది?",
@@ -650,15 +678,14 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
     };
 
     const initialGreeting = greetings[selectedLanguage] || greetings.en;
-
-    setMessages((prev) => [
-      ...prev,
-      {
-        role: 'assistant',
-        content: initialGreeting,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      }
-    ]);
+    const greetingMsg: ConversationTurn = {
+      role: 'assistant',
+      content: initialGreeting,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+    const updatedWithGreeting = [...messagesRef.current, greetingMsg];
+    messagesRef.current = updatedWithGreeting;
+    setMessages(updatedWithGreeting);
 
     // Speak initial greeting aloud; automatically listens when finished!
     await speakText(initialGreeting, selectedLanguage);
@@ -1127,6 +1154,33 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
             >
               <MessageSquare className="w-5 h-5" />
               <span className="text-[10px] font-semibold">Transcript</span>
+            </button>
+
+            {/* Reset / New Harvest */}
+            <button
+              type="button"
+              onClick={() => {
+                stopSpeaking();
+                currentContextRef.current = {};
+                setCurrentContext({});
+                const resetMsg: ConversationTurn = {
+                  role: 'assistant',
+                  content: selectedLanguage === 'te' 
+                    ? "రీసెట్ చేయబడింది. ఏ కొత్త పంటను ప్యాక్ చేయాలనుకుంటున్నారు?" 
+                    : "Reset complete. What new crop or harvest are you packing?",
+                  timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                };
+                messagesRef.current = [resetMsg];
+                setMessages([resetMsg]);
+                setRecommendation(null);
+                setDetailedReport(null);
+                speakText(resetMsg.content, selectedLanguage);
+              }}
+              className="p-4 rounded-full transition cursor-pointer flex flex-col items-center gap-1 bg-slate-800 hover:bg-slate-700 text-white"
+              title="Reset Conversation for a New Harvest"
+            >
+              <RefreshCw className="w-5 h-5 text-slate-300" />
+              <span className="text-[10px] font-semibold">New Crop</span>
             </button>
 
             {/* End Call Button (Big Red Hang-Up) */}

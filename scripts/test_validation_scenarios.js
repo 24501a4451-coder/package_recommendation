@@ -324,70 +324,84 @@ async function runAllTests() {
   }
 
   // ==========================================
-  // TEST 8: Real Farmer Expert Voice Conversation & Level 1 Pipeline
+  // TEST 8: Real Farmer Expert Voice Conversation (Full 10-Turn Dynamic Dialogue)
   // ==========================================
-  console.log('\n--- TEST 8: Real Farmer Expert Voice Conversation & Level 1 DSS ---');
-  
-  // Turn 1: Farmer mentions crop & transport
-  const res8a = await fetch(`${BASE}/api/voice/farmer-converse`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenL1}` },
-    body: JSON.stringify({
-      message: 'I have fresh tomatoes and I want to send them to the market.',
-      history: [],
-      currentContext: {},
-      language: 'en'
-    })
-  });
-  const data8a = await res8a.json();
-  console.log(`8a (Farmer Turn 1): Assistant Reply = "${data8a.reply}"`);
-  console.log(`8a Extracted Crop:`, data8a.updatedContext.commodity);
+  console.log('\n--- TEST 8: Real Farmer Expert Voice Conversation (10-Turn Dynamic Dialogue) ---');
+  let turnHistory = [];
+  let currentContext = {};
 
-  // Turn 2: Farmer gives duration & temperature correction
-  const res8b = await fetch(`${BASE}/api/voice/farmer-converse`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenL1}` },
-    body: JSON.stringify({
-      message: 'About two days, without cold storage, hot weather around 30 degrees.',
-      history: [
-        { role: 'farmer', content: 'I have fresh tomatoes and I want to send them to the market.', timestamp: '12:00' },
-        { role: 'assistant', content: data8a.reply, timestamp: '12:00' }
-      ],
-      currentContext: data8a.updatedContext,
-      language: 'en'
-    })
-  });
-  const data8b = await res8b.json();
-  console.log(`8b (Farmer Turn 2): Ready = ${data8b.readyForRecommendation}`);
-  if (data8b.recommendation) {
-    console.log(`8b Recommended Packaging: ${data8b.recommendation.packagingStructure}`);
-    console.log(`8b Equilibrium MAP Gas: ${data8b.recommendation.mapRecommendation.targetO2Percent} O2 / ${data8b.recommendation.mapRecommendation.targetCO2Percent} CO2`);
-  }
-  if (data8b.detailedReport) {
-    console.log(`8b Detailed Report Generated: ID = ${data8b.detailedReport.id}`);
+  async function sendVoiceTurn(turnNum, message, lang = 'en') {
+    const res = await fetch(`${BASE}/api/voice/farmer-converse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenL1}` },
+      body: JSON.stringify({
+        message,
+        history: turnHistory,
+        currentContext,
+        language: lang
+      })
+    });
+    if (!res.ok) throw new Error(`Turn ${turnNum} failed: ${res.status}`);
+    const data = await res.json();
+    turnHistory.push({ role: 'farmer', content: message, timestamp: '12:00' });
+    turnHistory.push({ role: 'assistant', content: data.reply, timestamp: '12:00' });
+    currentContext = data.updatedContext;
+    console.log(`Turn ${turnNum} [Farmer]: "${message}"`);
+    console.log(`Turn ${turnNum} [Buddy]: "${data.reply}"`);
+    return data;
   }
 
-  // Turn 3: Spoken Language Switch Command ("Please speak in Telugu")
-  const res8c = await fetch(`${BASE}/api/voice/farmer-converse`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenL1}` },
-    body: JSON.stringify({
-      message: 'Can you please speak in Telugu from now on?',
-      history: [
-        { role: 'farmer', content: 'I have fresh tomatoes.', timestamp: '12:00' },
-        { role: 'assistant', content: data8b.reply, timestamp: '12:01' }
-      ],
-      currentContext: data8b.updatedContext,
-      language: 'en'
-    })
-  });
-  const data8c = await res8c.json();
-  console.log(`8c (Language Switch Turn): Detected Language = "${data8c.detectedLanguage}", Reply = "${data8c.reply}"`);
-  if (data8c.detectedLanguage === 'te') {
-    console.log('✅ Dynamic language switch to Telugu verified!');
+  // Turn 1: Farmer mentions crop
+  const t1 = await sendVoiceTurn(1, 'I am harvesting fresh tomatoes today.');
+  if (!currentContext.commodity) throw new Error('Failed to extract commodity in Turn 1');
+
+  // Turn 2: Farmer asks a question back ("Why do you need to know that?")
+  const t2 = await sendVoiceTurn(2, 'Why do you need to know about the transit time and vehicle?');
+  if (!t2.reply.toLowerCase().includes('respire') && !t2.reply.toLowerCase().includes('breath') && !t2.reply.toLowerCase().includes('moisture') && !t2.reply.toLowerCase().includes('ventilat')) {
+    throw new Error('Assistant did not provide postharvest scientific rationale in response to "Why"');
   }
 
-  console.log('✅ TEST 8 PASSED: Farmer conversational buddy turns, context capture, dynamic language switching, and scientific Level 1 recommendation verified.');
+  // Turn 3: Multi-fact answer (destination, quantity, transit duration)
+  const t3 = await sendVoiceTurn(3, 'I have 500 kg, and I need to transport them to Vijayawada mandi. It will take around two days.');
+  if (currentContext.transportDurationDays !== 2) throw new Error('Failed to extract 2 days transit duration in Turn 3');
+
+  // Turn 4: Environmental conditions with negation & unknown
+  const t4 = await sendVoiceTurn(4, 'There will be no cold storage, it is hot around 30 degrees outside, but I do not know the exact humidity.');
+  if (currentContext.refrigeration !== false) throw new Error('Failed to handle negation "no cold storage" correctly in Turn 4');
+  if (!currentContext.unknownFields.includes('humidity')) throw new Error('Failed to mark humidity as unknown field in Turn 4');
+
+  // Turn 5: Correction of an earlier answer
+  const t5 = await sendVoiceTurn(5, 'Actually it changed, now the journey will take 3 days instead of 2.');
+  if (currentContext.transportDurationDays !== 3) throw new Error('Failed to handle correction to 3 days in Turn 5');
+
+  // Turn 6: Preference for low-cost packaging
+  const t6 = await sendVoiceTurn(6, 'I want something affordable and low cost.');
+  if (currentContext.budget !== 'Economy') throw new Error('Failed to record budget preference in Turn 6');
+
+  // Turn 7: Readiness & Level 1 Scientific Recommendation Execution
+  const t7 = await sendVoiceTurn(7, 'Yes, please calculate the best package for my harvest.');
+  if (!t7.readyForRecommendation || !t7.recommendation) {
+    throw new Error('Recommendation should be ready and generated in Turn 7');
+  }
+  console.log(`7 Recommended Structure: ${t7.recommendation.packagingStructure}`);
+  console.log(`7 Equilibrium MAP Gas: ${t7.recommendation.mapRecommendation.targetO2Percent} O2 / ${t7.recommendation.mapRecommendation.targetCO2Percent} CO2`);
+  console.log(`7 Report Generated: ID = ${t7.detailedReport.id}`);
+
+  // Turn 8: Post-recommendation question (Must NOT loop back to "What crop are you harvesting?")
+  const t8 = await sendVoiceTurn(8, 'Can I use normal corrugated cardboard boxes for these tomatoes?');
+  if (t8.reply.toLowerCase().includes('welcome! what crop') || t8.reply.toLowerCase().includes('what crop')) {
+    throw new Error('Assistant looped back to asking for crop after recommendation was already generated!');
+  }
+
+  // Turn 9: Language switch to Telugu
+  const t9 = await sendVoiceTurn(9, 'దయచేసి తెలుగులో మాట్లాడండి.', 'te');
+  console.log(`9 Detected Language: ${t9.detectedLanguage}`);
+  if (t9.detectedLanguage !== 'te') throw new Error('Failed to switch language to Telugu in Turn 9');
+
+  // Turn 10: In-depth Telugu follow-up question
+  const t10 = await sendVoiceTurn(10, 'టమాటాలకు రంధ్రాలు ఉన్న డబ్బాలు ఎందుకు మంచివి?', 'te');
+  console.log(`10 Telugu Spoken Reply: "${t10.reply}"`);
+  console.log('✅ TEST 8 PASSED: Comprehensive 10-turn dynamic dialogue, multi-fact extraction, negation handling, corrections, questions, language switching, and Level 1 DSS verified without looping!');
 
   // ==========================================
   // TEST 9: Level 2 Multi-Component Recommendation & AI Packaging Visualization
@@ -450,8 +464,28 @@ async function runAllTests() {
   console.log(`9b Dynamic Prompt Preview: "${data9b.prompt.slice(0, 100)}..."`);
   console.log('✅ TEST 9 PASSED: Level 2 multi-component recommendation and dynamic visualization pipeline verified.');
 
+  // ==========================================
+  // TEST 10: Strict Role/Level Authorization Check for Farmer Voice API
+  // ==========================================
+  console.log('\n--- TEST 10: Voice Assistant Restricted Exclusively to Level 1 ---');
+  const res10 = await fetch(`${BASE}/api/voice/farmer-converse`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenL2}` },
+    body: JSON.stringify({
+      message: 'Hello, I want advice on packaging hot burgers'
+    })
+  });
+  if (res10.status === 403) {
+    const data10 = await res10.json();
+    console.log(`10 (Level 2 attempted access to Farmer Voice): Blocked with 403 (${data10.error})`);
+    console.log(`10 Message: "${data10.message}"`);
+    console.log('✅ TEST 10 PASSED: Voice assistant strictly barred from Level 2 / non-Level 1 accounts.');
+  } else {
+    throw new Error(`Expected 403 when Level 2 accesses Farmer Voice, got ${res10.status}`);
+  }
+
   console.log('\n====================================================');
-  console.log('ALL 9 SCIENTIFIC & MULTIMODAL VALIDATION SCENARIOS COMPLETED SUCCESSFULLY!');
+  console.log('ALL 10 SCIENTIFIC & MULTIMODAL VALIDATION SCENARIOS COMPLETED SUCCESSFULLY!');
   console.log('====================================================');
 }
 

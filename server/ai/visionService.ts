@@ -28,6 +28,7 @@ export interface AIAnalysisResponse {
 
 export class VisionAIService {
   private ai: GoogleGenAI | null = null;
+  private apiAccessDisabled = false;
 
   constructor() {
     if (process.env.GEMINI_API_KEY) {
@@ -41,7 +42,6 @@ export class VisionAIService {
           }
         });
       } catch (err) {
-        console.warn('Failed to initialize GoogleGenAI with key, using fallback:', err);
         this.ai = null;
       }
     }
@@ -56,7 +56,7 @@ export class VisionAIService {
     userHint?: string
   ): Promise<AIAnalysisResponse> {
     // Dynamically initialize Gemini client if key is available
-    if (!this.ai && process.env.GEMINI_API_KEY) {
+    if (!this.ai && process.env.GEMINI_API_KEY && !this.apiAccessDisabled) {
       try {
         this.ai = new GoogleGenAI({
           apiKey: process.env.GEMINI_API_KEY,
@@ -67,7 +67,7 @@ export class VisionAIService {
           }
         });
       } catch (e) {
-        console.warn('Could not initialize GoogleGenAI:', e);
+        // ignore init errors
       }
     }
 
@@ -80,7 +80,7 @@ export class VisionAIService {
     const cleanBase64 = base64Data.replace(/^data:[^;]+;base64,/, '').trim();
 
     // Attempt REAL AI using Gemini 3.8 Flash
-    if (this.ai && process.env.GEMINI_API_KEY) {
+    if (this.ai && process.env.GEMINI_API_KEY && !this.apiAccessDisabled) {
       try {
         const prompt = `You are the food perception and packaging engineering AI for FOODPACK-AI.
 Analyze this food photograph carefully and accurately.
@@ -176,8 +176,14 @@ Return ONLY a strictly valid JSON object matching this schema:
           },
           matchedDatabaseFood: matchedDb
         };
-      } catch (geminiError) {
-        console.warn('Gemini 3.8 Flash vision call error, using uncertain confirmation fallback:', geminiError);
+      } catch (geminiError: any) {
+        const errMsg = geminiError?.message || String(geminiError);
+        if (geminiError?.status === 403 || errMsg.includes('denied access') || errMsg.includes('PERMISSION_DENIED')) {
+          this.apiAccessDisabled = true;
+          console.info('[VisionAIService] Cloud project access denied on key; activating deterministic food confirmation pipeline.');
+        } else {
+          console.info('[VisionAIService] Cloud vision perception unavailable; activating deterministic food confirmation pipeline.');
+        }
       }
     }
 
@@ -197,7 +203,7 @@ Return ONLY a strictly valid JSON object matching this schema:
   ) {
     const cleanBase64 = base64Data.replace(/^data:image\/\w+;base64,/, '');
 
-    if (this.ai && process.env.GEMINI_API_KEY) {
+    if (this.ai && process.env.GEMINI_API_KEY && !this.apiAccessDisabled) {
       try {
         const prompt = `You are a certified packaging forensic failure engineer for FOODPACK-AI.
 Analyze this photo of an existing takeaway or food container.
@@ -250,8 +256,8 @@ Output JSON:
           ...parsed,
           aiMode: 'REAL' as const
         };
-      } catch (err) {
-        console.warn('Existing packaging AI vision failed, falling back:', err);
+      } catch (err: any) {
+        console.info('[VisionAIService] Existing packaging optical analysis using domain heuristic evaluation.');
       }
     }
 

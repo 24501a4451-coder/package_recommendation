@@ -3,6 +3,7 @@ import { dataStore } from '../db/dataStore';
 
 export class AssistantService {
   private ai: GoogleGenAI | null = null;
+  private apiAccessDisabled = false;
 
   constructor() {
     if (process.env.GEMINI_API_KEY) {
@@ -30,7 +31,7 @@ export class AssistantService {
       level?: string;
     }
   ): Promise<{ answer: string; evidenceCited: string[]; aiMode: 'REAL' | 'FALLBACK' }> {
-    if (this.ai && process.env.GEMINI_API_KEY) {
+    if (this.ai && process.env.GEMINI_API_KEY && !this.apiAccessDisabled) {
       try {
         const prompt = `You are the FOODPACK-AI Scientific Packaging Assistant (SIH26236).
 User Level: ${context?.level || 'LEVEL_2 Takeaway Intelligence'}
@@ -63,8 +64,14 @@ Return JSON:
           evidenceCited: parsed.evidenceCited || ['FOODPACK-AI Scientific Knowledge Base'],
           aiMode: 'REAL'
         };
-      } catch (err) {
-        console.warn('AI Assistant error, using grounded deterministic responder:', err);
+      } catch (err: any) {
+        const errMsg = err?.message || String(err);
+        if (err?.status === 403 || errMsg.includes('denied access') || errMsg.includes('PERMISSION_DENIED')) {
+          this.apiAccessDisabled = true;
+          console.info('[AssistantService] Gemini API access denied on project key; using grounded scientific knowledge base.');
+        } else {
+          console.info('[AssistantService] Cloud API unavailable; using grounded scientific knowledge base.');
+        }
       }
     }
 

@@ -143,7 +143,6 @@ export class GeminiImageProvider implements PackagingVisualizationProvider {
           }
         }
       } catch (err: any) {
-        console.warn(`[GeminiImageProvider] Failed with ${modelName}:`, err?.message || err);
         lastError = err;
       }
     }

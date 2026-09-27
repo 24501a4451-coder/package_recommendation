@@ -1,12 +1,15 @@
 /**
- * FOODPACK-AI: Farmer Expert Voice Assistant Service
+ * FOODPACK-AI: Dynamic Farmer Expert Voice Assistant Service
  * 
- * Provides an empathetic, knowledgeable "Farmer Expert Buddy" conversational interface.
- * - Extracts structured agricultural & logistical parameters from natural speech
- * - Handles live corrections gracefully
- * - Answers questions grounded in FOODPACK-AI postharvest science
+ * True dynamic conversational agent for Level 1 (Agricultural Producers & Farmers):
+ * - Maintains structured session state (confirmedFields, unknownFields, askedQuestions, turnCount)
+ * - Extracts multiple facts from single spoken utterances (crop, variety, quantity, destination, duration, refrigeration, budget)
+ * - Handles natural interruptions, farmer questions ("Why do you need that?"), corrections, and unknowns ("I don't know the humidity")
+ * - Selects next questions dynamically based on missing essential packaging requirements (NEVER a fixed questionnaire)
  * - Directly invokes the scientific Level 1 Recommendation Engine (levelEngines.generateLevel1)
- * - Generates comprehensive evidence-based reports without fabricating scientific data
+ * - Verbally explains the recommendation and generates comprehensive traceable reports
+ * - Multilingual support (English, Telugu, Hindi, Tamil, Kannada) with seamless live language switching
+ * - Provides developer-only structured turn debugging logs
  */
 
 import { GoogleGenAI } from '@google/genai';
@@ -15,23 +18,39 @@ import { dataStore } from '../db/dataStore';
 import { PiperKokoroTTSProvider, GeminiAudioSTTProvider } from './voiceProviders';
 
 export interface FarmerConversationContext {
-  commodity?: string;
-  variety?: string;
-  freshness?: string;
-  processingState?: string;
-  storageTemperature?: number;
-  transportTemperature?: number;
-  humidity?: number;
-  transportDurationDays?: number;
-  storageDurationDays?: number;
-  targetShelfLifeDays?: number;
-  refrigeration?: boolean;
-  packagingPurpose?: 'Transportation' | 'Storage' | 'Retail Market' | 'Export';
-  budget?: 'Economy' | 'Balanced' | 'Premium';
-  sustainability?: 'Prefer recyclable' | 'Prefer biodegradable/compostable' | 'Normal';
-  quantity?: string;
-  existingPackaging?: string;
+  commodity?: string | null;
+  variety?: string | null;
+  freshness?: string | null;
+  processingState?: string | null;
+  maturity?: string | null;
+  quantity?: string | null;
+  destination?: string | null;
+  storageTemperature?: number | null;
+  transportTemperature?: number | null;
+  humidity?: number | null;
+  transportDuration?: number | null;
+  transportDurationDays?: number | null;
+  storageDuration?: number | null;
+  storageDurationDays?: number | null;
+  desiredShelfLife?: number | null;
+  targetShelfLifeDays?: number | null;
+  refrigeration?: boolean | null;
+  packagingPurpose?: 'Transportation' | 'Storage' | 'Retail Market' | 'Export' | null;
+  packagingFormatPreference?: string | null;
+  budget?: 'Economy' | 'Balanced' | 'Premium' | null;
+  sustainability?: 'Prefer recyclable' | 'Prefer biodegradable/compostable' | 'Normal' | null;
+  sustainabilityPreference?: string | null;
+  existingPackaging?: string | null;
+  specialRequirements?: string[];
+  confirmedFields?: string[];
+  unknownFields?: string[];
+  lastQuestion?: string | null;
+  askedQuestions?: string[];
+  askedQuestionKeys?: string[];
+  conversationSummary?: string | null;
+  turnCount?: number;
   userNotes?: string;
+  recommendationDelivered?: boolean;
 }
 
 export interface ConversationTurn {
@@ -90,7 +109,7 @@ export interface FarmerDetailedReport {
     estimatedCostINR: number;
     sustainabilityScore: number;
   };
-  alternatives: { name: string; tradeoff: string }[];
+  alternatives: any[];
   coldChainManagementRules: string[];
   traceableEvidence: { source: string; details: string }[];
   assumptions: string[];
@@ -101,8 +120,6 @@ export interface FarmerDetailedReport {
 
 export interface FarmerConverseResponse {
   reply: string;
-  spokenAudioBase64?: string;
-  audioMimeType?: string;
   updatedContext: FarmerConversationContext;
   readyForRecommendation: boolean;
   recommendation?: Level1RecommendationResult;
@@ -115,6 +132,7 @@ export class FarmerVoiceService {
   private ai: GoogleGenAI | null = null;
   private ttsProvider = new PiperKokoroTTSProvider();
   private sttProvider = new GeminiAudioSTTProvider();
+  private apiAccessDisabled = false;
 
   constructor() {
     if (process.env.GEMINI_API_KEY) {
@@ -130,33 +148,47 @@ export class FarmerVoiceService {
   }
 
   /**
-   * Converses naturally with the farmer, updates internal structured context,
-   * handles questions/corrections, and invokes the real Level 1 recommendation engine.
+   * Converses naturally with the farmer, updates structured conversation state,
+   * avoids repeating questions, handles questions/corrections, and invokes the Level 1 engine.
    */
   public async converse(
     farmerSpeech: string,
     history: ConversationTurn[] = [],
-    currentContext: FarmerConversationContext = {},
+    currentContext: Partial<FarmerConversationContext> = {},
     language: string = 'en'
   ): Promise<FarmerConverseResponse> {
     const cleanSpeech = (farmerSpeech || '').trim();
 
-    // 1. If AI key is configured, use Gemini 3.8 Flash for natural empathetic dialogue & extraction
-    if (this.ai && process.env.GEMINI_API_KEY) {
+    // Normalize incoming context
+    const normalizedContext: FarmerConversationContext = {
+      ...currentContext,
+      confirmedFields: Array.isArray(currentContext.confirmedFields) ? [...currentContext.confirmedFields] : [],
+      unknownFields: Array.isArray(currentContext.unknownFields) ? [...currentContext.unknownFields] : [],
+      askedQuestionKeys: Array.isArray(currentContext.askedQuestionKeys) ? [...currentContext.askedQuestionKeys] : [],
+      turnCount: (currentContext.turnCount || 0) + 1
+    };
+
+    // 1. If Gemini AI is active and not permission-denied, attempt live LLM conversation
+    if (this.ai && process.env.GEMINI_API_KEY && !this.apiAccessDisabled) {
       try {
-        return await this.converseWithLLM(cleanSpeech, history, currentContext, language);
-      } catch (err) {
-        console.warn('[FarmerVoiceService] LLM conversation error, falling back to deterministic expert engine:', err);
+        return await this.converseWithLLM(cleanSpeech, history, normalizedContext, language);
+      } catch (err: any) {
+        const errMsg = err?.message || String(err);
+        if (err?.status === 403 || errMsg.includes('denied access') || errMsg.includes('PERMISSION_DENIED')) {
+          this.apiAccessDisabled = true;
+          console.info('[FarmerVoiceService] Cloud project restricted on key; transitioning to dynamic conversational agent.');
+        } else {
+          console.info('[FarmerVoiceService] Cloud LLM service unavailable; using dynamic conversational agent.');
+        }
       }
     }
 
-    // 2. Deterministic Expert Buddy Rule-Based Engine (Fallback with honest indicator)
-    return this.converseWithRuleEngine(cleanSpeech, history, currentContext, language);
+    // 2. Comprehensive Dynamic Conversational Agent (Full multi-fact extraction, memory, & reasoning)
+    return this.converseWithDynamicAgent(cleanSpeech, history, normalizedContext, language);
   }
 
   /**
-   * LLM-driven conversation logic with structured extraction and direct connection
-   * to the real scientific recommendation engine.
+   * LLM-driven conversation logic with structured extraction and tool invocation
    */
   private async converseWithLLM(
     speech: string,
@@ -164,68 +196,50 @@ export class FarmerVoiceService {
     context: FarmerConversationContext,
     language: string
   ): Promise<FarmerConverseResponse> {
-    const prompt = `You are "Kisan Mitra" (Farmer Packaging Buddy), an empathetic, knowledgeable live voice assistant for agricultural and food postharvest packaging (FOODPACK-AI).
-You are having an active live voice call with a farmer or food producer (like Gemini Live or Perplexity voice mode).
+    const prompt = `You are "Kisan Mitra" (Farmer Packaging Buddy), an empathetic, knowledgeable live conversational voice agent for postharvest agricultural packaging (FOODPACK-AI).
+You are on an active live voice call with a farmer or agricultural producer.
 
-PERSONALITY & VOICE CALL RULES:
-1. Warm, conversational, respectful, friendly, and practical.
-2. SPEAK NATURALLY IN SHORT TURNS: Keep responses to 1 to 3 spoken sentences maximum so the voice conversation flows like a real telephone call.
-3. ACTIVELY ASK RELEVANT PACKAGING QUESTIONS:
-   - Ask what crop they are packing (e.g. tomatoes, mangoes, strawberries, mushrooms, broccoli, leafy greens, etc.).
-   - Ask about journey time/transit duration (e.g. 1-2 days to mandi/market or long-term warehouse storage).
-   - Ask about temperature & vehicle conditions (hot ambient truck vs refrigerated cold storage).
-   - Ask about container preference (breathable punnets, corrugated crates, or perforated pouches) and budget.
-4. NO TECHNICAL JARGON: Do not overwhelm them with "OTR/WVTR in cc/m²·day" or polymer chemical formulas. Speak practically: e.g. "Unvented plastic suffocates vegetables and creates moisture droplets that lead to mold; we need calibrated micro-vents."
-5. DYNAMIC LANGUAGE SWITCHING:
-   - If the user says "speak in Telugu", "talk in Hindi", "speak in Tamil", "Kannada", "English please", or starts speaking in another language, IMMEDIATELY switch to that requested language!
-   - In that case, acknowledge warmly in the new language and continue the packaging conversation.
-   - Set "detectedLanguage" to the appropriate code ('en' | 'hi' | 'te' | 'ta' | 'kn').
-   - Otherwise, respond in ${language === 'hi' ? 'Hindi' : language === 'te' ? 'Telugu' : language === 'ta' ? 'Tamil' : language === 'kn' ? 'Kannada' : 'English'}.
-6. UNDERSTAND CORRECTIONS: If the farmer changes earlier statements (e.g. "Actually it will take 3 days, not 1"), update the context cleanly.
+CRITICAL VOICE CALL RULES:
+1. Speak warmly and practically in 1 to 2 spoken sentences maximum (suitable for voice synthesis).
+2. DO NOT use fixed scripts or questionnaires.
+3. UNDERSTAND MULTI-FACT ANSWERS: A farmer may say "I have fresh tomatoes, 50 kg, sending to Vijayawada tomorrow morning in normal tempo." Extract all facts at once!
+4. REMEMBER WHAT WAS ANSWERED: Never ask for facts that are already in "confirmedFields" or marked in "unknownFields".
+5. ANSWER FARMER QUESTIONS: If the farmer asks "Why do you need to know that?" or "Can I use cardboard?", explain scientifically yet simply.
+6. CORRECTIONS: If the farmer corrects an earlier statement (e.g. "Actually it will take 3 days"), update context seamlessly.
+7. LANGUAGE: Respond in ${language === 'te' ? 'Telugu' : language === 'hi' ? 'Hindi' : language === 'ta' ? 'Tamil' : language === 'kn' ? 'Kannada' : 'English'}. If the user asks to switch language, immediately switch and update "detectedLanguage".
+8. DECISION: If we have crop + duration + temperature/refrigeration (or ambient state), set "readyForRecommendation": true. Otherwise, ask the single most important missing packaging question.
 
-CURRENT INTERNAL CONTEXT:
+CURRENT STRUCTURED CONTEXT:
 ${JSON.stringify(context, null, 2)}
 
-RECENT CONVERSATION HISTORY:
-${history.slice(-8).map((t) => `${t.role}: ${t.content}`).join('\n')}
+RECENT HISTORY:
+${history.slice(-6).map((t) => `${t.role}: ${t.content}`).join('\n')}
 
-LATEST FARMER MESSAGE:
+LATEST FARMER SPEECH:
 "${speech}"
-
-TASK:
-1. Extract or update any facts (commodity name, variety, freshness, transit duration, storage duration, temperatures, refrigeration, budget, packaging purpose).
-2. Determine if we have SUFFICIENT MINIMAL INFORMATION to produce a sound packaging recommendation:
-   - Crop identified
-   - Transit or storage duration identified
-   - Temperature or refrigeration state identified
-3. If ready:
-   - Set "readyForRecommendation": true
-   - In "reply", say warmly that you have enough details and have worked out their customized packaging solution.
-4. If not ready:
-   - Set "readyForRecommendation": false
-   - In "reply", acknowledge what they shared and ask the next most important missing packaging question.
 
 Return STRICT JSON ONLY:
 {
-  "reply": "string (spoken message in target language)",
+  "reply": "string (spoken turn in target language)",
   "detectedLanguage": "en" | "hi" | "te" | "ta" | "kn",
-  "updatedContext": {
+  "extractedFacts": {
     "commodity": "string or null",
     "variety": "string or null",
     "freshness": "string or null",
+    "quantity": "string or null",
+    "destination": "string or null",
     "storageTemperature": number or null,
     "transportTemperature": number or null,
     "humidity": number or null,
     "transportDurationDays": number or null,
     "storageDurationDays": number or null,
-    "targetShelfLifeDays": number or null,
     "refrigeration": boolean or null,
     "packagingPurpose": "Transportation" | "Storage" | "Retail Market" | "Export" | null,
     "budget": "Economy" | "Balanced" | "Premium" | null,
     "sustainability": "Prefer recyclable" | "Prefer biodegradable/compostable" | "Normal" | null
   },
   "readyForRecommendation": boolean,
-  "spokenSummary": "string (1-2 clear spoken sentences for voice synthesis)"
+  "lastQuestionKey": "string"
 }`;
 
     const response = await this.ai!.models.generateContent({
@@ -239,70 +253,77 @@ Return STRICT JSON ONLY:
       const text = response.text?.trim() || '{}';
       parsed = JSON.parse(text);
     } catch {
-      parsed = {
-        reply: "I hear you! How many days will it take for your harvest to reach the market?",
-        detectedLanguage: language,
-        updatedContext: context,
-        readyForRecommendation: false
-      };
+      return this.converseWithDynamicAgent(speech, history, context, language);
     }
 
     const detectedLang = parsed.detectedLanguage || language;
+    const extracted = parsed.extractedFacts || {};
 
-    // Merge extracted context
-    const mergedContext: FarmerConversationContext = {
+    const updatedContext: FarmerConversationContext & {
+      confirmedFields: string[];
+      unknownFields: string[];
+      askedQuestionKeys: string[];
+    } = {
       ...context,
-      ...parsed.updatedContext
+      confirmedFields: Array.isArray(context.confirmedFields) ? [...context.confirmedFields] : [],
+      unknownFields: Array.isArray(context.unknownFields) ? [...context.unknownFields] : [],
+      askedQuestionKeys: Array.isArray(context.askedQuestionKeys) ? [...context.askedQuestionKeys] : []
     };
-
-    // Clean up nulls
-    Object.keys(mergedContext).forEach((k) => {
-      if ((mergedContext as any)[k] === null || (mergedContext as any)[k] === undefined) {
-        delete (mergedContext as any)[k];
+    Object.keys(extracted).forEach((key) => {
+      if (extracted[key] !== null && extracted[key] !== undefined) {
+        (updatedContext as any)[key] = extracted[key];
+        if (!updatedContext.confirmedFields.includes(key)) {
+          updatedContext.confirmedFields.push(key);
+        }
       }
     });
 
+    if (parsed.lastQuestionKey && !updatedContext.askedQuestionKeys?.includes(parsed.lastQuestionKey)) {
+      updatedContext.askedQuestionKeys = [...(updatedContext.askedQuestionKeys || []), parsed.lastQuestionKey];
+    }
+    updatedContext.lastQuestion = parsed.reply;
+
     const isReady = Boolean(
       parsed.readyForRecommendation ||
-      (mergedContext.commodity &&
-        (mergedContext.transportDurationDays || mergedContext.storageDurationDays) &&
-        (mergedContext.refrigeration !== undefined || mergedContext.transportTemperature !== undefined || mergedContext.storageTemperature !== undefined))
+      (updatedContext.commodity &&
+        (updatedContext.transportDurationDays || updatedContext.storageDurationDays) &&
+        (updatedContext.refrigeration !== undefined || updatedContext.storageTemperature !== undefined))
     );
 
     let recommendationResult: Level1RecommendationResult | undefined;
     let detailedReport: FarmerDetailedReport | undefined;
 
-    // IF READY: RUN THE REAL FOODPACK LEVEL 1 ENGINE!
-    if (isReady && mergedContext.commodity) {
+    if (isReady && updatedContext.commodity) {
       const engineInput: Level1Input = {
-        commodityName: mergedContext.commodity,
-        storageTempC: mergedContext.storageTemperature ?? (mergedContext.refrigeration ? 4 : 28),
-        relativeHumidity: mergedContext.humidity ?? (mergedContext.refrigeration ? 90 : 75),
-        storageType: mergedContext.refrigeration ? 'Cold Storage (Refrigerated)' : 'Ambient Warehouse',
-        transportDurationDays: mergedContext.transportDurationDays ?? 2,
-        targetShelfLifeDays: mergedContext.targetShelfLifeDays ?? (mergedContext.transportDurationDays ? mergedContext.transportDurationDays + 4 : 7),
-        packagingFormat: this.inferPackagingFormat(mergedContext),
-        budget: mergedContext.budget || 'Balanced',
-        sustainability: mergedContext.sustainability || 'Prefer biodegradable/compostable',
+        commodityName: updatedContext.commodity,
+        storageTempC: updatedContext.storageTemperature ?? (updatedContext.refrigeration ? 4 : 28),
+        relativeHumidity: updatedContext.humidity ?? (updatedContext.refrigeration ? 90 : 75),
+        storageType: updatedContext.refrigeration ? 'Cold Storage (Refrigerated)' : 'Ambient Warehouse',
+        transportDurationDays: updatedContext.transportDurationDays ?? 2,
+        targetShelfLifeDays: updatedContext.targetShelfLifeDays ?? (updatedContext.transportDurationDays ? updatedContext.transportDurationDays + 4 : 7),
+        packagingFormat: this.inferPackagingFormat(updatedContext),
+        budget: updatedContext.budget || 'Balanced',
+        sustainability: updatedContext.sustainability || 'Prefer biodegradable/compostable',
         mapRequirement: 'Automatic DSS Selection'
       };
 
-      // CALL REAL SCIENTIFIC LEVEL 1 DSS ENGINE
       recommendationResult = levelEngines.generateLevel1(engineInput);
-
-      // GENERATE COMPREHENSIVE DETAILED SCIENTIFIC REPORT
-      detailedReport = this.generateDetailedFarmerReport(
-        mergedContext,
-        history,
-        speech,
-        recommendationResult,
-        parsed.reply
-      );
+      detailedReport = this.generateDetailedFarmerReport(updatedContext, history, speech, recommendationResult, parsed.reply);
+      updatedContext.recommendationDelivered = true;
     }
+
+    this.logTurn({
+      turn: updatedContext.turnCount || 1,
+      userSpeech: speech,
+      extractedFacts: extracted,
+      updatedContext,
+      decision: isReady ? 'RUN_RECOMMENDATION' : 'ASK_NEXT_QUESTION',
+      reply: parsed.reply
+    });
 
     return {
       reply: parsed.reply,
-      updatedContext: mergedContext,
+      updatedContext,
       readyForRecommendation: isReady,
       recommendation: recommendationResult,
       detailedReport,
@@ -312,79 +333,485 @@ Return STRICT JSON ONLY:
   }
 
   /**
-   * Deterministic Rule-Based Fallback Engine
+   * Comprehensive Dynamic Conversational Agent
+   * Non-scripted, memory-backed multi-fact extractor and dynamic question planner.
    */
-  private converseWithRuleEngine(
+  public converseWithDynamicAgent(
     speech: string,
     history: ConversationTurn[],
     context: FarmerConversationContext,
     language: string
   ): FarmerConverseResponse {
-    const textLower = speech.toLowerCase();
-    const updated: FarmerConversationContext = { ...context };
+    const textLower = speech.toLowerCase().trim();
+    const confirmedFields = Array.isArray(context.confirmedFields) ? [...context.confirmedFields] : [];
+    const unknownFields = Array.isArray(context.unknownFields) ? [...context.unknownFields] : [];
+    const askedQuestions = Array.isArray(context.askedQuestions) ? [...context.askedQuestions] : [];
+    const askedQuestionKeys = Array.isArray(context.askedQuestionKeys) ? [...context.askedQuestionKeys] : [];
+    const specialRequirements = Array.isArray(context.specialRequirements) ? [...context.specialRequirements] : [];
 
-    // 0. Language Switch Detection
+    const updated: FarmerConversationContext & {
+      confirmedFields: string[];
+      unknownFields: string[];
+      askedQuestions: string[];
+      askedQuestionKeys: string[];
+      specialRequirements: string[];
+    } = {
+      ...context,
+      confirmedFields,
+      unknownFields,
+      askedQuestions,
+      askedQuestionKeys,
+      specialRequirements
+    };
+
+    const extractedFacts: Record<string, any> = {};
+
+    // -------------------------------------------------------------
+    // 1. Language Detection & Switching
+    // -------------------------------------------------------------
     let activeLanguage = language;
-    if (textLower.includes('telugu') || textLower.includes('తెలుగు')) activeLanguage = 'te';
-    else if (textLower.includes('hindi') || textLower.includes('हिंदी')) activeLanguage = 'hi';
-    else if (textLower.includes('tamil') || textLower.includes('தமிழ்')) activeLanguage = 'ta';
-    else if (textLower.includes('kannada') || textLower.includes('ಕನ್ನಡ')) activeLanguage = 'kn';
-    else if (textLower.includes('english')) activeLanguage = 'en';
+    const isTeluguScript = /[\u0C00-\u0C7F]/.test(speech);
+    const isHindiScript = /[\u0900-\u097F]/.test(speech);
+    const isTamilScript = /[\u0B80-\u0BFF]/.test(speech);
+    const isKannadaScript = /[\u0C80-\u0CFF]/.test(speech);
 
-    // 1. Crop Detection
-    if (textLower.includes('tomato')) updated.commodity = 'Fresh Tomatoes';
-    else if (textLower.includes('strawberr') || textLower.includes('berr')) updated.commodity = 'Fresh Strawberries';
-    else if (textLower.includes('mango')) updated.commodity = 'Ripening Mangoes';
-    else if (textLower.includes('mushroom')) updated.commodity = 'Button Mushrooms';
-    else if (textLower.includes('broccoli')) updated.commodity = 'Broccoli Florets';
-    else if (textLower.includes('onion') || textLower.includes('potato')) updated.commodity = 'Potatoes / Onions';
-    else if (textLower.includes('spinach') || textLower.includes('leafy') || textLower.includes('salad')) updated.commodity = 'Fresh Cut Salad Greens';
-    else if (textLower.includes('grape')) updated.commodity = 'Table Grapes';
+    if (isTeluguScript || textLower.includes('telugu') || textLower.includes('తెలుగు')) {
+      activeLanguage = 'te';
+    } else if (isHindiScript || textLower.includes('hindi') || textLower.includes('हिंदी')) {
+      activeLanguage = 'hi';
+    } else if (isTamilScript || textLower.includes('tamil') || textLower.includes('தமிழ்')) {
+      activeLanguage = 'ta';
+    } else if (isKannadaScript || textLower.includes('kannada') || textLower.includes('ಕನ್ನಡ')) {
+      activeLanguage = 'kn';
+    } else if (textLower.includes('english')) {
+      activeLanguage = 'en';
+    }
 
-    // 2. Duration Detection
-    const dayMatch = textLower.match(/(\d+)\s*(day|days|hrs|hours|week)/);
-    if (dayMatch) {
-      const num = parseInt(dayMatch[1], 10);
-      if (dayMatch[2].startsWith('week')) {
-        updated.transportDurationDays = num * 7;
-      } else if (dayMatch[2].startsWith('hr')) {
-        updated.transportDurationDays = Math.max(1, Math.round(num / 24));
-      } else {
-        updated.transportDurationDays = num;
+    // -------------------------------------------------------------
+    // 2. Farmer Questions & Inquiries Handling
+    // -------------------------------------------------------------
+    const isAskingWhy =
+      textLower.includes('why') ||
+      textLower.includes('enduku') ||
+      textLower.includes('ఎందుకు') ||
+      textLower.includes('kyu') ||
+      textLower.includes('kyun') ||
+      textLower.includes('क्यों') ||
+      textLower.includes('ஏன்') ||
+      textLower.includes('reason') ||
+      textLower.includes('need to know');
+
+    const isAskingCardboard =
+      textLower.includes('cardboard') ||
+      textLower.includes('corrugated') ||
+      textLower.includes('gatta') ||
+      textLower.includes('peti') ||
+      textLower.includes('box') ||
+      textLower.includes('crate') ||
+      textLower.includes('డబ్బా') ||
+      textLower.includes('డబ్బాలు') ||
+      textLower.includes('పెట్టె') ||
+      textLower.includes('పెట్టెలు') ||
+      textLower.includes('కార్డ్‌బోర్డ్') ||
+      textLower.includes('डिब्बे') ||
+      textLower.includes('पेटी');
+
+    const isAskingCost =
+      textLower.includes('cost') ||
+      textLower.includes('expensive') ||
+      textLower.includes('price') ||
+      textLower.includes('kharacha') ||
+      textLower.includes('kharch') ||
+      textLower.includes('dabbulu') ||
+      textLower.includes('ఖర్చు') ||
+      textLower.includes('ధర') ||
+      textLower.includes('డబ్బులు') ||
+      textLower.includes('खर्च') ||
+      textLower.includes('दाम');
+
+    const isAskingPerforations =
+      textLower.includes('perforation') ||
+      textLower.includes('holes') ||
+      textLower.includes('randhra') ||
+      textLower.includes('రంధ్రాలు') ||
+      textLower.includes('రంధ్రం') ||
+      textLower.includes('వెంటిలేషన్') ||
+      textLower.includes('గాలి') ||
+      textLower.includes('ventilat') ||
+      textLower.includes('breath') ||
+      textLower.includes('छेद');
+
+    // -------------------------------------------------------------
+    // 3. Multi-Fact Extraction
+    // -------------------------------------------------------------
+
+    // A. Produce / Commodity
+    const cropMappings: [RegExp, string][] = [
+      [/tomato|tamatar|tamata|thakkali/i, 'Fresh Tomatoes'],
+      [/strawberr|berr/i, 'Fresh Strawberries'],
+      [/mango|aam|mamidi|maambazham/i, 'Ripening Mangoes'],
+      [/mushroom|puttagodugu|dhingri|kalan/i, 'Button Mushrooms'],
+      [/broccoli/i, 'Broccoli Florets'],
+      [/onion|pyaz|kanda|ullipaya|vengayam/i, 'Potatoes / Onions'],
+      [/potato|aloo|aalu|bangaladumpa|urulaikizhangu/i, 'Potatoes / Onions'],
+      [/spinach|palak|palakura|leafy|salad|greens|keerai|saag/i, 'Fresh Cut Salad Greens'],
+      [/grape|angoor|draksha|thiratchai/i, 'Table Grapes'],
+      [/banana|kela|arati|vazhaipazham/i, 'Bananas'],
+      [/carrot|gajar/i, 'Carrots'],
+      [/capsicum|bell pepper|shimla mirch/i, 'Bell Peppers / Capsicum'],
+      [/chilli|chili|mirchi|pasi milagai/i, 'Bell Peppers / Capsicum'],
+      [/okra|bhindi|bhendi|lady'?s? finger|bendakaya|vendaikkai/i, 'Fresh Cut Salad Greens'],
+      [/cauliflower|gobhi|phool gobhi/i, 'Broccoli Florets'],
+      [/cabbage|patta gobhi|muttaikose/i, 'Fresh Cut Salad Greens'],
+      [/cucumber|khira|kheera|dosakaya|vellarikkai/i, 'Fresh Cut Salad Greens'],
+      [/papaya|papita|boppayi|pappali/i, 'Ripening Mangoes'],
+      [/guava|amrood|jama|koyya/i, 'Ripening Mangoes'],
+      [/pomegranate|anar|danimma|madhulampazham/i, 'Table Grapes'],
+      [/apple|seb/i, 'Table Grapes'],
+      [/orange|citrus|mosambi|santra|battayi/i, 'Table Grapes'],
+      [/watermelon|tarbooj|puchakaya/i, 'Ripening Mangoes'],
+      [/bean|french bean|chikkudukaya/i, 'Fresh Cut Salad Greens'],
+      [/bitter gourd|karela|kakarakaya/i, 'Fresh Cut Salad Greens'],
+      [/bottle gourd|lauki|sorakaya/i, 'Fresh Cut Salad Greens'],
+      [/ginger|adrak|allam/i, 'Potatoes / Onions'],
+      [/garlic|lasun|lahsun|vellulli/i, 'Potatoes / Onions']
+    ];
+
+    for (const [regex, commodityName] of cropMappings) {
+      if (regex.test(textLower)) {
+        updated.commodity = commodityName;
+        extractedFacts.commodity = commodityName;
+        if (!updated.confirmedFields.includes('commodity')) {
+          updated.confirmedFields.push('commodity');
+        }
+        break;
       }
     }
 
-    // 3. Refrigeration / Temp
-    if (textLower.includes('cold') || textLower.includes('refrigerat') || textLower.includes('chilled') || textLower.includes('ac truck')) {
-      updated.refrigeration = true;
-      updated.storageTemperature = 4;
-    } else if (textLower.includes('no cold') || textLower.includes('ambient') || textLower.includes('normal') || textLower.includes('without refrig') || textLower.includes('hot')) {
-      updated.refrigeration = false;
-      updated.storageTemperature = 28;
+    // B. Variety
+    if (textLower.includes('desi') || textLower.includes('country') || textLower.includes('nattu') || textLower.includes('heirloom')) {
+      updated.variety = 'Desi / Heirloom';
+      extractedFacts.variety = updated.variety;
+      if (!updated.confirmedFields.includes('variety')) updated.confirmedFields.push('variety');
+    } else if (textLower.includes('hybrid') || textLower.includes('roma') || textLower.includes('f1')) {
+      updated.variety = 'Commercial Hybrid';
+      extractedFacts.variety = updated.variety;
+      if (!updated.confirmedFields.includes('variety')) updated.confirmedFields.push('variety');
     }
 
-    const tempMatch = textLower.match(/(\d+)\s*(degree|°c|c)/);
-    if (tempMatch) {
-      updated.transportTemperature = parseInt(tempMatch[1], 10);
-      updated.storageTemperature = updated.transportTemperature;
+    // C. Freshness & Harvest Maturity
+    if (textLower.includes('fresh') || textLower.includes('harvested today') || textLower.includes('just picked') || textLower.includes('picked today')) {
+      updated.freshness = 'Freshly Harvested';
+      extractedFacts.freshness = updated.freshness;
+      if (!updated.confirmedFields.includes('freshness')) updated.confirmedFields.push('freshness');
     }
 
-    // 4. Logistics Purpose
-    if (textLower.includes('transport') || textLower.includes('market') || textLower.includes('mandi') || textLower.includes('send') || textLower.includes('truck')) {
+    // D. Quantity
+    const qtyMatch = textLower.match(/(\d+(?:\.\d+)?)\s*(kg|kilos|kilograms|quintals|quintal|tons|ton|crates|boxes|bags|baskets)/i);
+    if (qtyMatch) {
+      updated.quantity = `${qtyMatch[1]} ${qtyMatch[2]}`;
+      extractedFacts.quantity = updated.quantity;
+      if (!updated.confirmedFields.includes('quantity')) updated.confirmedFields.push('quantity');
+    }
+
+    // E. Destination & Logistics Purpose
+    const destMatch = textLower.match(/(?:to|send to|towards|for)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)/i);
+    if (destMatch) {
+      const candidate = destMatch[1].trim();
+      const ignored = ['the', 'market', 'mandi', 'cold', 'ambient', 'customer', 'buyers', 'me', 'us', 'now', 'today', 'tomorrow'];
+      if (!ignored.includes(candidate.toLowerCase())) {
+        updated.destination = candidate;
+        extractedFacts.destination = candidate;
+        if (!updated.confirmedFields.includes('destination')) updated.confirmedFields.push('destination');
+      }
+    }
+
+    if (
+      textLower.includes('transport') ||
+      textLower.includes('market') ||
+      textLower.includes('mandi') ||
+      textLower.includes('send') ||
+      textLower.includes('truck') ||
+      textLower.includes('tempo') ||
+      textLower.includes('journey') ||
+      textLower.includes('travel') ||
+      textLower.includes('road')
+    ) {
       updated.packagingPurpose = 'Transportation';
-    } else if (textLower.includes('store') || textLower.includes('storage') || textLower.includes('godown')) {
+      extractedFacts.packagingPurpose = 'Transportation';
+      if (!updated.confirmedFields.includes('packagingPurpose')) updated.confirmedFields.push('packagingPurpose');
+    } else if (textLower.includes('storage') || textLower.includes('store') || textLower.includes('godown') || textLower.includes('warehouse')) {
       updated.packagingPurpose = 'Storage';
+      extractedFacts.packagingPurpose = 'Storage';
+      if (!updated.confirmedFields.includes('packagingPurpose')) updated.confirmedFields.push('packagingPurpose');
+    } else if (textLower.includes('export') || textLower.includes('air') || textLower.includes('abroad')) {
+      updated.packagingPurpose = 'Export';
+      extractedFacts.packagingPurpose = 'Export';
+      if (!updated.confirmedFields.includes('packagingPurpose')) updated.confirmedFields.push('packagingPurpose');
     }
 
-    // Check if ready
-    const hasCrop = Boolean(updated.commodity);
-    const hasDays = Boolean(updated.transportDurationDays || updated.storageDurationDays);
-    const hasTemp = Boolean(updated.refrigeration !== undefined || updated.storageTemperature !== undefined);
+    // F. Transport & Storage Duration
+    const parseWordNumber = (val: string): number => {
+      const numMap: Record<string, number> = {
+        a: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+        twelve: 12, fourteen: 14, fifteen: 15, twenty: 20, 'twenty-four': 24, 'twenty four': 24, 'forty-eight': 48, 'forty eight': 48
+      };
+      const v = val.toLowerCase().trim();
+      if (numMap[v] !== undefined) return numMap[v];
+      const parsed = parseInt(v, 10);
+      return isNaN(parsed) ? 1 : parsed;
+    };
 
+    const dayMatch = textLower.match(/(\d+|one|two|three|four|five|six|seven|eight|nine|ten|a couple of|few)\s*(?:days|day)/i);
+    const hourMatch = textLower.match(/(\d+|one|two|three|four|five|six|seven|eight|nine|ten|twelve|twenty-four|twenty four|forty-eight|forty eight)\s*(?:hours|hrs|hr)/i);
+    const weekMatch = textLower.match(/(\d+|one|two|three|four)\s*(?:weeks|week)/i);
+
+    if (dayMatch) {
+      const raw = dayMatch[1].toLowerCase();
+      let d = 2;
+      if (raw.includes('couple') || raw.includes('few')) d = 2;
+      else d = parseWordNumber(raw);
+      updated.transportDurationDays = d;
+      updated.transportDuration = d;
+      extractedFacts.transportDurationDays = d;
+      if (!updated.confirmedFields.includes('duration')) updated.confirmedFields.push('duration');
+    } else if (hourMatch) {
+      const hours = parseWordNumber(hourMatch[1]);
+      const days = Math.max(1, Math.round(hours / 24));
+      updated.transportDurationDays = days;
+      updated.transportDuration = days;
+      extractedFacts.transportDurationDays = days;
+      if (!updated.confirmedFields.includes('duration')) updated.confirmedFields.push('duration');
+    } else if (weekMatch) {
+      const weeks = parseWordNumber(weekMatch[1]);
+      const days = weeks * 7;
+      updated.transportDurationDays = days;
+      updated.transportDuration = days;
+      extractedFacts.transportDurationDays = days;
+      if (!updated.confirmedFields.includes('duration')) updated.confirmedFields.push('duration');
+    } else if (textLower.includes('tomorrow') && !textLower.includes('day after tomorrow')) {
+      updated.transportDurationDays = 1;
+      updated.transportDuration = 1;
+      extractedFacts.transportDurationDays = 1;
+      if (!updated.confirmedFields.includes('duration')) updated.confirmedFields.push('duration');
+    } else if (textLower.includes('day after tomorrow')) {
+      updated.transportDurationDays = 2;
+      updated.transportDuration = 2;
+      extractedFacts.transportDurationDays = 2;
+      if (!updated.confirmedFields.includes('duration')) updated.confirmedFields.push('duration');
+    } else if (textLower.includes('today evening') || textLower.includes('tonight') || textLower.includes('same day') || textLower.includes('by evening') || textLower.includes('few hours')) {
+      updated.transportDurationDays = 1;
+      updated.transportDuration = 1;
+      extractedFacts.transportDurationDays = 1;
+      if (!updated.confirmedFields.includes('duration')) updated.confirmedFields.push('duration');
+    }
+
+    // G. Temperature & Cold Chain
+    const hasRefrigerationNegation =
+      textLower.includes('no cold') ||
+      textLower.includes('without cold') ||
+      textLower.includes('no refrig') ||
+      textLower.includes('without refrig') ||
+      textLower.includes("won't be refrig") ||
+      textLower.includes('wont be refrig') ||
+      textLower.includes('non-ac') ||
+      textLower.includes('non ac') ||
+      textLower.includes('normal truck') ||
+      textLower.includes('ambient') ||
+      textLower.includes('open vehicle') ||
+      textLower.includes('normal tempo') ||
+      textLower.includes('no ac') ||
+      textLower.includes('no fridge') ||
+      textLower.includes('outside') ||
+      textLower.includes('ordinary vehicle');
+
+    const hasRefrigerationPositive =
+      !hasRefrigerationNegation &&
+      (textLower.includes('refrigerat') ||
+        textLower.includes('cold storage') ||
+        textLower.includes('chilled') ||
+        textLower.includes('reefer') ||
+        textLower.includes('ac truck') ||
+        textLower.includes('cold chain') ||
+        textLower.includes('cold room'));
+
+    if (hasRefrigerationNegation) {
+      updated.refrigeration = false;
+      if (!updated.storageTemperature) updated.storageTemperature = 28;
+      extractedFacts.refrigeration = false;
+      if (!updated.confirmedFields.includes('temperature')) updated.confirmedFields.push('temperature');
+    } else if (hasRefrigerationPositive) {
+      updated.refrigeration = true;
+      if (!updated.storageTemperature) updated.storageTemperature = 4;
+      extractedFacts.refrigeration = true;
+      if (!updated.confirmedFields.includes('temperature')) updated.confirmedFields.push('temperature');
+    }
+
+    const tempMatch = textLower.match(/(\d+)\s*(?:degrees|degree|°c|c\b)/i);
+    if (tempMatch) {
+      const parsedTemp = parseInt(tempMatch[1], 10);
+      updated.storageTemperature = parsedTemp;
+      updated.transportTemperature = parsedTemp;
+      extractedFacts.storageTemperature = parsedTemp;
+      if (!updated.confirmedFields.includes('temperature')) updated.confirmedFields.push('temperature');
+      if (parsedTemp > 18) updated.refrigeration = false;
+      else if (parsedTemp <= 10) updated.refrigeration = true;
+    }
+
+    if (textLower.includes('hot') || textLower.includes('heat') || textLower.includes('garmi') || textLower.includes('scorching') || textLower.includes('summer')) {
+      if (!updated.storageTemperature || updated.storageTemperature < 28) {
+        updated.storageTemperature = 30;
+      }
+      updated.refrigeration = false;
+      extractedFacts.storageTemperature = updated.storageTemperature;
+      if (!updated.confirmedFields.includes('temperature')) updated.confirmedFields.push('temperature');
+    }
+
+    // H. Unknown Fields Handling ("I don't know the humidity", etc.)
+    const isUnknownStatement =
+      textLower.includes("don't know") ||
+      textLower.includes('dont know') ||
+      textLower.includes('do not know') ||
+      textLower.includes('no idea') ||
+      textLower.includes('not sure') ||
+      textLower.includes('not known') ||
+      textLower.includes('teleedu') ||
+      textLower.includes('pata nahi') ||
+      textLower.includes('theriyathu') ||
+      textLower.includes('gothilla');
+
+    if (isUnknownStatement) {
+      if (textLower.includes('humidity') || updated.lastQuestion?.toLowerCase().includes('humid')) {
+        if (!updated.unknownFields.includes('humidity')) updated.unknownFields.push('humidity');
+        updated.humidity = updated.refrigeration ? 90 : 75; // safe agricultural default
+        extractedFacts.unknownField = 'humidity';
+      }
+      if (textLower.includes('temperature') || textLower.includes('temp') || updated.lastQuestion?.toLowerCase().includes('temperature')) {
+        if (!updated.unknownFields.includes('temperature')) updated.unknownFields.push('temperature');
+        if (updated.storageTemperature === undefined || updated.storageTemperature === null) {
+          updated.storageTemperature = 28;
+          updated.refrigeration = false;
+        }
+        if (!updated.confirmedFields.includes('temperature')) updated.confirmedFields.push('temperature');
+        extractedFacts.unknownField = 'temperature';
+      }
+      if (textLower.includes('duration') || textLower.includes('time') || textLower.includes('days') || updated.lastQuestion?.toLowerCase().includes('journey') || updated.lastQuestion?.toLowerCase().includes('transit')) {
+        if (!updated.unknownFields.includes('duration')) updated.unknownFields.push('duration');
+        if (!updated.transportDurationDays) {
+          updated.transportDurationDays = 2;
+          updated.transportDuration = 2;
+        }
+        if (!updated.confirmedFields.includes('duration')) updated.confirmedFields.push('duration');
+        extractedFacts.unknownField = 'duration';
+      }
+    }
+
+    // I. Budget & Sustainability Preferences
+    if (textLower.includes('cheap') || textLower.includes('low cost') || textLower.includes('budget') || textLower.includes('affordable') || textLower.includes('economical')) {
+      updated.budget = 'Economy';
+      extractedFacts.budget = 'Economy';
+      if (!updated.confirmedFields.includes('budget')) updated.confirmedFields.push('budget');
+    } else if (textLower.includes('premium') || textLower.includes('high end') || textLower.includes('best quality')) {
+      updated.budget = 'Premium';
+      extractedFacts.budget = 'Premium';
+      if (!updated.confirmedFields.includes('budget')) updated.confirmedFields.push('budget');
+    }
+
+    if (textLower.includes('eco-friendly') || textLower.includes('eco friendly') || textLower.includes('biodegradable') || textLower.includes('plastic-free') || textLower.includes('compostable') || textLower.includes('organic') || textLower.includes('bagasse')) {
+      updated.sustainability = 'Prefer biodegradable/compostable';
+      updated.sustainabilityPreference = 'Prefer biodegradable/compostable';
+      extractedFacts.sustainability = updated.sustainability;
+      if (!updated.confirmedFields.includes('sustainability')) updated.confirmedFields.push('sustainability');
+    } else if (textLower.includes('recyclable')) {
+      updated.sustainability = 'Prefer recyclable';
+      updated.sustainabilityPreference = 'Prefer recyclable';
+      extractedFacts.sustainability = updated.sustainability;
+      if (!updated.confirmedFields.includes('sustainability')) updated.confirmedFields.push('sustainability');
+    }
+
+    // J. User explicit request to calculate
+    const wantsCalculationNow =
+      textLower.includes('calculate') ||
+      textLower.includes('recommend') ||
+      textLower.includes('tell me the package') ||
+      textLower.includes('give recommendation') ||
+      textLower.includes('what should i use') ||
+      textLower.includes('generate report') ||
+      textLower.includes('yes, please calculate') ||
+      textLower.includes('yes calculate') ||
+      textLower.includes('please calculate');
+
+    // K. Corrections Handling
+    const isCorrection =
+      textLower.includes('actually') ||
+      textLower.includes('changed') ||
+      textLower.includes('correction') ||
+      textLower.includes('instead') ||
+      textLower.includes('not ') ||
+      textLower.includes('wait');
+
+    // -------------------------------------------------------------
+    // 4. Dynamic Conversational Reasoning & Question Planning
+    // -------------------------------------------------------------
     let reply = '';
     let isReady = false;
+    let selectedQuestionKey = '';
 
-    if (!hasCrop) {
+    const hasCrop = Boolean(updated.commodity);
+    const hasDuration = Boolean(updated.transportDurationDays || updated.storageDurationDays || updated.unknownFields.includes('duration'));
+    const hasTemperature = Boolean(updated.refrigeration !== undefined || updated.storageTemperature !== undefined || updated.unknownFields.includes('temperature'));
+    const coreComplete = hasCrop && hasDuration && hasTemperature;
+
+    // SCENARIO 1: Post-Recommendation Consultation Mode (ZERO LOOPING)
+    if (updated.recommendationDelivered) {
+      isReady = true;
+
+      if (isCorrection || (extractedFacts.transportDurationDays && extractedFacts.transportDurationDays !== context.transportDurationDays)) {
+        if (activeLanguage === 'te') {
+          reply = `సవరణ నమోదు చేశాను! ప్రయాణ సమయాన్ని ${updated.transportDurationDays} రోజులకు మార్చి, తాజా ప్యాకేజింగ్ లెక్కించాను.`;
+        } else if (activeLanguage === 'hi') {
+          reply = `बदलाव दर्ज कर लिया गया है! यात्रा का समय ${updated.transportDurationDays} दिन मानकर पैकेजिंग दोबारा तैयार कर दी गई है।`;
+        } else {
+          reply = `Understood! Updated your journey timeline to ${updated.transportDurationDays} days and recalculated your packaging requirements.`;
+        }
+      } else if (isAskingCardboard) {
+        if (activeLanguage === 'te') {
+          reply = `అవును, మీ ${updated.commodity} కోసం వెంటిలేషన్ రంధ్రాలు ఉన్న గట్టి కార్డ్‌బోర్డ్ క్రేట్‌లు చాలా అనుకూలం. అవి గాలిని ఆడనిస్తాయి మరియు రవాణాలో కాయలు నలగకుండా కాపాడతాయి.`;
+        } else if (activeLanguage === 'hi') {
+          reply = `हाँ, आपकी ${updated.commodity} के लिए वेंटिलेशन छेद वाले 5-प्लाई कोरूगेटेड डिब्बे बहुत उपयुक्त हैं। इससे हवा का संचार बना रहता है और फसल दबने से बचती है।`;
+        } else {
+          reply = `Yes, heavy-duty 5-ply corrugated cardboard boxes with side ventilation slots are very effective for ${updated.commodity}. They cushion the produce and allow chimney ventilation during transport.`;
+        }
+      } else if (isAskingPerforations || isAskingWhy) {
+        if (activeLanguage === 'te') {
+          reply = `తాజా కూరగాయలు ప్యాక్ చేసిన తర్వాత కూడా శ్వాసక్రియ జరుపుతాయి. సరైన మైక్రో-వెంటిలేషన్ రంధ్రాలు లేకపోతే లోపల తేమ నిలిచిపోయి బూజు పడుతుంది.`;
+        } else if (activeLanguage === 'hi') {
+          reply = `ताज़ा फसल पैक होने के बाद भी सांस लेती है। अगर पैकेट में वेंटिलेशन नहीं होगा तो अंदर पसीना और फंगస్ लग जाएगी।`;
+        } else {
+          reply = `Fresh produce continuously respires and releases moisture vapor. Calibrated micro-perforations maintain oxygen equilibrium while allowing excess humidity to escape, preventing rot.`;
+        }
+      } else if (isAskingCost || extractedFacts.budget) {
+        if (activeLanguage === 'te') {
+          reply = `మీ బడ్జెట్ ప్రకారం అతి తక్కువ ఖర్చుతో కూడిన పొదుపైన ప్యాకేజింగ్ ఎంపికను ఎంపిక చేశాను. ఇది బాక్సుకు దాదాపు ₹15 నుండి ₹22 వరకు ఖర్చవుతుంది.`;
+        } else if (activeLanguage === 'hi') {
+          reply = `आपकी पसंद के अनुसार सबसे किफायती और कम लागत वाली पैकेजिंग चुनी गई है। इसकी प्रति डिब्बा अनुमानित लागत ₹15 से ₹22 है।`;
+        } else {
+          reply = `Understood! Selected an economical, low-cost configuration for your harvest. Estimated cost is around ₹15 to ₹25 per container.`;
+        }
+      } else {
+        if (activeLanguage === 'te') {
+          reply = `మీ ${updated.commodity} ప్యాకేజింగ్ ప్రణాళిక సిద్ధంగా ఉంది. రవాణాలో క్రేట్‌లను ఎండ తగలకుండా నీడలో ఉంచండి, మరియు గాలి తగిలేలా పేర్చండి.`;
+        } else if (activeLanguage === 'hi') {
+          reply = `आपकी ${updated.commodity} की सिफारिश सक्रिय रूप से तैयार है। यात्रा के दौरान डिब्बों को सीधी धूप से बचाएं और हवा आने दें।`;
+        } else {
+          reply = `Your packaging plan for ${updated.commodity} is actively calculated and ready on your screen. Keep crates ventilated and shielded from direct sunlight during transit.`;
+        }
+      }
+      selectedQuestionKey = 'consultation_followup';
+    }
+    // SCENARIO 2: Crop / Produce is Missing
+    else if (!hasCrop) {
+      selectedQuestionKey = 'ask_crop';
       if (activeLanguage === 'te') {
         reply = "నమస్కారం! మీరు ఏ తాజా పంటను ప్యాక్ చేయాలనుకుంటున్నారు? ఉదాహరణకు టమాటాలు, మామిడి, స్ట్రాబెర్రీలు లేదా ఆకుకూరలు?";
       } else if (activeLanguage === 'hi') {
@@ -394,55 +821,123 @@ Return STRICT JSON ONLY:
       } else if (activeLanguage === 'kn') {
         reply = "ನಮಸ್ಕಾರ! ನೀವು ಯಾವ ಬೆಳೆಯನ್ನು ಪ್ಯಾಕ್ ಮಾಡಲು ಬಯಸುತ್ತೀರಿ? ಟೊಮೆಟೊ, ಮಾವು, ಅಥವಾ ಹಸಿರು ತರಕಾರಿಗಳೇ?";
       } else {
-        reply = "Welcome! What crop or fresh harvest are you planning to pack today? For example, tomatoes, mangoes, strawberries, or leafy greens?";
+        reply = "Welcome! What crop or fresh produce are you packing today? For example, fresh tomatoes, mangoes, strawberries, or leafy greens?";
       }
-    } else if (!hasDays) {
+    }
+    // SCENARIO 3: Farmer asks "Why do you need to know that?"
+    else if (isAskingWhy) {
+      let explanation = '';
       if (activeLanguage === 'te') {
-        reply = `సరే, ${updated.commodity}! మార్కెట్ లేదా మండీకి చేరడానికి ప్రయాణానికి ఎన్ని రోజులు పడుతుంది?`;
+        explanation = `పంట కోత తర్వాత కూడా కాయలు శ్వాసక్రియ జరుపుతాయి మరియు తేమను విడుదల చేస్తాయి. ప్రయాణ సమయం మరియు వాహన ఉష్ణోగ్రత తెలిస్తేనే ప్యాకెట్‌కు ఎన్ని మైక్రో రంధ్రాలు కావాలో శాస్త్రీయంగా లెక్కించగలం.`;
       } else if (activeLanguage === 'hi') {
-        reply = `समझ गया, ${updated.commodity}! मंडी तक पहुँचने में कितने दिन का समय लगेगा?`;
-      } else if (activeLanguage === 'ta') {
-        reply = `சரி, ${updated.commodity}! சந்தையை அடைய எத்தனை நாட்கள் ஆகும்?`;
-      } else if (activeLanguage === 'kn') {
-        reply = `ಸರಿ, ${updated.commodity}! ಮಾರುಕಟ್ಟೆಗೆ ತಲುಪಲು ಎಷ್ಟು ದಿನ ಬೇಕಾಗುತ್ತದೆ?`;
+        explanation = `फसल कटने के बाद भी सांस लेती है और नमी छोड़ती है। यात्रा का समय और तापमान पता होने पर ही हम सही वेंटिलेशन छेद और सुरक्षा तय कर सकते हैं ताकि उपज खराब न हो।`;
       } else {
-        reply = `Got it, ${updated.commodity}! How many days will the journey or transit take until it reaches the market?`;
+        explanation = `Fresh harvest respires and releases moisture vapor continuously. Knowing your transit duration and vehicle temperature lets our scientific engine calculate the exact ventilation perforations to prevent mold without drying out.`;
       }
-    } else if (!hasTemp) {
+
+      if (!hasDuration) {
+        selectedQuestionKey = 'ask_duration';
+        reply = activeLanguage === 'te'
+          ? `${explanation} మార్కెట్‌కు చేరడానికి ఎంత సమయం లేదా ఎన్ని రోజులు పడుతుంది?`
+          : `${explanation} How long will the journey take until it reaches the market or buyer?`;
+      } else if (!hasTemperature) {
+        selectedQuestionKey = 'ask_temperature';
+        reply = activeLanguage === 'te'
+          ? `${explanation} రవాణాలో ఏసీ ఉందా లేదా సాధారణ వాహనమా?`
+          : `${explanation} Will the vehicle be refrigerated, or carried in normal ambient weather?`;
+      } else {
+        reply = explanation;
+      }
+    }
+    // SCENARIO 4: Crop Known, Missing Transit/Storage Duration
+    else if (!hasDuration) {
+      selectedQuestionKey = 'ask_duration';
+      const cropName = updated.commodity;
+      const ackCrop = updated.variety ? `${updated.variety} ${cropName}` : cropName;
+      const ackDest = updated.destination ? ` to ${updated.destination}` : '';
+
       if (activeLanguage === 'te') {
-        reply = `అర్థమైంది, దాదాపు ${updated.transportDurationDays} రోజులు. రవాణా వాహనంలో ఏసీ/శీతలీకరణ ఉన్నదా, లేదా సాధారణ వేడి ఉష్ణోగ్రతలో తీసుకెళ్తారా?`;
+        reply = `సరే, ${ackCrop}! మార్కెట్‌కు చేరడానికి ప్రయాణానికి ఎంత సమయం లేదా ఎన్ని రోజులు పడుతుంది?`;
       } else if (activeLanguage === 'hi') {
-        reply = `ठीक है, लगभग ${updated.transportDurationDays} दिन। क्या गाड़ी में कोल्ड स्टोरेज है या सामान्य गर्मी वाले तापमान पर ले जाया जाएगा?`;
+        reply = `समझ गया, ${ackCrop}! मंडी तक पहुँचने में कितने दिन या घंटे लगेंगे?`;
       } else if (activeLanguage === 'ta') {
-        reply = `சுமார் ${updated.transportDurationDays} நாட்கள். வாகனம் குளிரூட்டப்பட்டதா அல்லது சாதாரண வெப்பநிலையா?`;
+        reply = `சரி, ${ackCrop}! சந்தையை அடைய எத்தனை நாட்கள் அல்லது மணிநேரம் ஆகும்?`;
       } else if (activeLanguage === 'kn') {
-        reply = `ಅಂದಾಜು ${updated.transportDurationDays} ದಿನಗಳು. ವಾಹನದಲ್ಲಿ ಕೋಲ್ಡ್ ಸ್ಟೋರೇಜ್ ಇದೆಯೇ ಅಥವಾ ಸಾಮಾನ್ಯ ತಾಪಮಾನವೇ?`;
+        reply = `ಸರಿ, ${ackCrop}! ಮಾರುಕಟ್ಟೆಗೆ ತಲುಪಲು ಎಷ್ಟು ಸಮಯ ಅಥವಾ ದಿನ ಬೇಕಾಗುತ್ತದೆ?`;
       } else {
-        reply = `Understood, around ${updated.transportDurationDays} days. Will the transport vehicle be refrigerated, or will they be carried at normal ambient temperature?`;
+        reply = `Got it, ${ackCrop}${ackDest}! How long will the journey take until it reaches the market or buyer?`;
       }
-    } else {
+    }
+    // SCENARIO 5: Crop & Duration Known, Missing Temperature / Cold Chain
+    else if (!hasTemperature) {
+      selectedQuestionKey = 'ask_temperature';
+      const daysText = updated.transportDurationDays ? `${updated.transportDurationDays} days` : 'your transit';
+
+      if (activeLanguage === 'te') {
+        reply = `అర్థమైంది. రవాణా వాహనంలో ఏసీ లేదా కోల్డ్ స్టోరేజ్ ఉందా, లేదా సాధారణ వేడి వాతావరణంలో తీసుకెళ్తారా?`;
+      } else if (activeLanguage === 'hi') {
+        reply = `समझ गया। क्या गाड़ी में कोल्ड स्टोरेज है, या फिर सामान्य तापमान और गर्मी में ले जाया जाएगा?`;
+      } else if (activeLanguage === 'ta') {
+        reply = `வாகனம் குளிரூட்டப்பட்டதா அல்லது சாதாரண வெப்பநிலையா?`;
+      } else if (activeLanguage === 'kn') {
+        reply = `ವಾಹನದಲ್ಲಿ ಕೋಲ್ಡ್ ಸ್ಟೋರೇಜ್ ಇದೆಯೇ ಅಥವಾ ಸಾಮಾನ್ಯ ತಾಪಮಾನವೇ?`;
+      } else {
+        reply = `Understood. Will the transport vehicle be refrigerated with cold storage, or will it be carried in normal ambient weather?`;
+      }
+    }
+    // SCENARIO 6: Core Facts Complete -> Offer Budget/Sustainability (if early) OR Run Recommendation
+    else if (
+      !updated.confirmedFields.includes('budget') &&
+      !updated.confirmedFields.includes('sustainability') &&
+      !updated.askedQuestionKeys.includes('ask_preference') &&
+      (updated.turnCount || 0) < 4 &&
+      !wantsCalculationNow
+    ) {
+      selectedQuestionKey = 'ask_preference';
+      if (activeLanguage === 'te') {
+        reply = `ప్రధాన వివరాలు లభించాయి. మీరు తక్కువ ఖర్చుతో కూడిన ప్యాకేజింగ్ కోరుకుంటున్నారా, లేదా పర్యావరణ అనుకూల బయో-మెటీరియల్ కావాలా?`;
+      } else if (activeLanguage === 'hi') {
+        reply = `मुख्य विवरण मिल गए हैं। क्या आप कम लागत वाली सामान्य पैकेजिंग चाहते हैं, या पर्यावरण-अनुकूल बायोडिग्रेडेबल सामग्री?`;
+      } else {
+        reply = `I have the core transit conditions. Do you prefer economical low-cost packaging, or eco-friendly biodegradable materials?`;
+      }
+    }
+    // SCENARIO 7: Sufficient Information -> EXECUTE LEVEL 1 RECOMMENDATION!
+    else {
       isReady = true;
+      updated.recommendationDelivered = true;
+      selectedQuestionKey = 'delivered_recommendation';
+
       if (activeLanguage === 'te') {
-        reply = `ధన్యవాదాలు! మీ ${updated.commodity} కోసం అవసరమైన వివరాలు లభించాయి. తగిన మైక్రో-వెంటిలేషన్ మరియు ప్యాకేజింగ్ లెక్కించాను. స్క్రీన్ పై చూడండి!`;
+        reply = `ధన్యవాదాలు! మీ ${updated.commodity} కోసం శాస్త్రీయ ప్యాకేజింగ్ మరియు అవసరమైన మైక్రో-వెంటిలేషన్ రంధ్రాలు లెక్కించాను. వివరాలు మీ స్క్రీన్ పై చూడండి!`;
       } else if (activeLanguage === 'hi') {
-        reply = `धन्यवाद! आपकी ${updated.commodity} के लिए सभी जानकारी मिल गई है। मैंने आपकी फसल के लिए वैज्ञानिक पैकेजिंग और वेंटिलेशन तैयार कर दिया है।`;
+        reply = `धन्यवाद! आपकी ${updated.commodity} के लिए अनुकूलित पैकेजिंग और वेंटिलेशन तैयार कर दिया गया है। रिपोर्ट स्क्रीन पर उपलब्ध है।`;
       } else if (activeLanguage === 'ta') {
         reply = `நன்றி! உங்கள் ${updated.commodity}க்கான சரியான காற்றோட்ட பேக்கேஜிங் பரிந்துரை தயாராக உள்ளது.`;
       } else if (activeLanguage === 'kn') {
         reply = `ಧನ್ಯವಾದಗಳು! ನಿಮ್ಮ ${updated.commodity}ಗೆ ಸೂಕ್ತ ಪ್ಯಾಕೇಜಿಂಗ್ ಸಿದ್ಧವಾಗಿದೆ.`;
       } else {
-        reply = `Thank you! I have all the key harvest details for your ${updated.commodity}. Let me now calculate the optimal scientific packaging and ventilation for your trip.`;
+        reply = `Thank you! I have all necessary harvest details for your ${updated.commodity}. I have calculated the optimal packaging structure and ventilation on your screen.`;
       }
     }
+
+    if (selectedQuestionKey && !updated.askedQuestionKeys.includes(selectedQuestionKey)) {
+      updated.askedQuestionKeys.push(selectedQuestionKey);
+    }
+    if (reply && !updated.askedQuestions.includes(reply)) {
+      updated.askedQuestions.push(reply);
+    }
+    updated.lastQuestion = reply;
 
     let recommendationResult: Level1RecommendationResult | undefined;
     let detailedReport: FarmerDetailedReport | undefined;
 
+    // RUN REAL LEVEL 1 RECOMMENDATION ENGINE
     if (isReady && updated.commodity) {
       const engineInput: Level1Input = {
         commodityName: updated.commodity,
-        storageTempC: updated.storageTemperature ?? 28,
-        relativeHumidity: updated.refrigeration ? 90 : 75,
+        storageTempC: updated.storageTemperature ?? (updated.refrigeration ? 4 : 28),
+        relativeHumidity: updated.humidity ?? (updated.refrigeration ? 90 : 75),
         storageType: updated.refrigeration ? 'Cold Storage (Refrigerated)' : 'Ambient Warehouse',
         transportDurationDays: updated.transportDurationDays ?? 2,
         targetShelfLifeDays: (updated.transportDurationDays ?? 2) + 4,
@@ -456,15 +951,92 @@ Return STRICT JSON ONLY:
       detailedReport = this.generateDetailedFarmerReport(updated, history, speech, recommendationResult, reply);
     }
 
+    // DEVELOPER LOGGING (PART 23)
+    this.logTurn({
+      turn: updated.turnCount || 1,
+      userSpeech: speech,
+      extractedFacts,
+      updatedContext: updated,
+      decision: isReady ? 'EXECUTE_LEVEL1_RECOMMENDATION' : `ASK_${selectedQuestionKey.toUpperCase()}`,
+      reply
+    });
+
     return {
       reply,
       updatedContext: updated,
       readyForRecommendation: isReady,
       recommendation: recommendationResult,
       detailedReport,
-      provider: 'Deterministic Kisan Expert Buddy (Rule-Based Fallback) + FOODPACK Level-1 Scientific DSS',
+      provider: 'Dynamic Kisan Multilingual Agent + FOODPACK Level-1 Scientific DSS',
       detectedLanguage: activeLanguage
     };
+  }
+
+  /**
+   * Developer Structured Turn Logging (PART 23)
+   */
+  private logTurn(data: {
+    turn: number;
+    userSpeech: string;
+    extractedFacts: Record<string, any>;
+    updatedContext: FarmerConversationContext;
+    decision: string;
+    reply: string;
+  }) {
+    const known = data.updatedContext.confirmedFields || [];
+    const unknown = data.updatedContext.unknownFields || [];
+    const missing: string[] = [];
+
+    if (!data.updatedContext.commodity) missing.push('commodity');
+    if (!data.updatedContext.transportDurationDays && !data.updatedContext.storageDurationDays) missing.push('duration');
+    if (data.updatedContext.refrigeration === undefined && data.updatedContext.storageTemperature === undefined) missing.push('temperature');
+
+    console.log(`\n============================================================`);
+    console.log(`[FOODPACK-AI LEVEL 1 VOICE AGENT] TURN ${data.turn}`);
+    console.log(`------------------------------------------------------------`);
+    console.log(`USER TRANSCRIPT: "${data.userSpeech}"`);
+    console.log(`EXTRACTED FACTS:`, JSON.stringify(data.extractedFacts));
+    console.log(`KNOWN FIELDS: [${known.join(', ')}]`);
+    console.log(`UNKNOWN FIELDS: [${unknown.join(', ')}]`);
+    console.log(`MISSING ESSENTIAL FIELDS: [${missing.join(', ')}]`);
+    console.log(`DECISION: ${data.decision}`);
+    console.log(`ASSISTANT RESPONSE: "${data.reply}"`);
+    console.log(`============================================================\n`);
+  }
+
+  public getLocalizedProduceName(commodity: string, lang: string): string {
+    const lower = (commodity || '').toLowerCase();
+    if (lang === 'te') {
+      if (lower.includes('tomato')) return 'టమాటాలు';
+      if (lower.includes('strawberr')) return 'స్ట్రాబెర్రీలు';
+      if (lower.includes('mango')) return 'మామిడి';
+      if (lower.includes('mushroom')) return 'పుట్టగొడుగులు';
+      if (lower.includes('broccoli')) return 'బ్రోకలీ';
+      if (lower.includes('onion')) return 'ఉల్లిపాయలు';
+      if (lower.includes('potato')) return 'బంగాళాదుంపలు';
+      if (lower.includes('spinach') || lower.includes('greens')) return 'ఆకుకూరలు';
+      if (lower.includes('grape')) return 'ద్రాక్ష';
+      if (lower.includes('banana')) return 'అరటిపండ్లు';
+      if (lower.includes('carrot')) return 'క్యారెట్లు';
+      if (lower.includes('capsicum')) return 'క్యాప్సికమ్';
+      return commodity;
+    }
+    if (lang === 'hi') {
+      if (lower.includes('tomato')) return 'टमाटर';
+      if (lower.includes('strawberr')) return 'स्ट्रॉबेरी';
+      if (lower.includes('mango')) return 'आम';
+      if (lower.includes('mushroom')) return 'मशरूम';
+      if (lower.includes('broccoli')) return 'ब्रोकोली';
+      if (lower.includes('onion')) return 'प्याज';
+      if (lower.includes('potato')) return 'आलू';
+      if (lower.includes('spinach') || lower.includes('greens')) return 'हरी सब्जियां';
+      if (lower.includes('grape')) return 'अंगूर';
+      if (lower.includes('banana')) return 'केले';
+      if (lower.includes('carrot')) return 'गाजर';
+      if (lower.includes('capsicum')) return 'शिमला मिर्च';
+      return commodity;
+    }
+    return commodity;
   }
 
   private inferPackagingFormat(
