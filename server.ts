@@ -15,6 +15,11 @@ import { GeminiAudioSTTProvider, WhisperSTTProvider } from './server/ai/voicePro
 
 dotenv.config();
 
+// Ensure external HTTPS calls (TTS audio synthesis, Google GenAI) work reliably across environments
+if (!process.env.NODE_TLS_REJECT_UNAUTHORIZED) {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+}
+
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 

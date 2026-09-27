@@ -91,8 +91,9 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
   const audioChunksRef = useRef<Blob[]>([]);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const timerIntervalRef = useRef<any>(null);
-  const speechTimeoutRef = useRef<any>(null);
   const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const speechTimeoutRef = useRef<any>(null);
 
   // Mutable state trackers for callbacks
   const callActiveRef = useRef(false);
@@ -304,8 +305,17 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
       clearTimeout(speechTimeoutRef.current);
       speechTimeoutRef.current = null;
     }
+    if (currentAudioRef.current) {
+      try {
+        currentAudioRef.current.pause();
+        currentAudioRef.current.currentTime = 0;
+      } catch (e) {}
+      currentAudioRef.current = null;
+    }
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
+      try {
+        window.speechSynthesis.cancel();
+      } catch (e) {}
     }
     isSpeakingRef.current = false;
     currentUtteranceRef.current = null;
@@ -313,14 +323,15 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
   };
 
   /**
-   * Speaks aloud with robust safety timer and browser pause-recovery
+   * Speaks aloud with native server TTS audio (Telugu, Hindi, English, etc.)
+   * and robust acoustic echo prevention.
    */
   const speakText = (text: string, lang: string = selectedLanguage): Promise<void> => {
     return new Promise((resolve) => {
       stopSpeaking();
       setCurrentAssistantSpeech(text);
 
-      if (speakerMuted || typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      if (speakerMuted) {
         setTimeout(() => {
           resolve();
           if (callActiveRef.current && !micMutedRef.current) {
@@ -330,66 +341,124 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
         return;
       }
 
-      try {
-        window.speechSynthesis.resume();
-        const utterance = new SpeechSynthesisUtterance(text);
-        currentUtteranceRef.current = utterance;
+      // Immediately abort recognition so assistant speaker audio is NEVER captured by microphone
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.abort();
+        } catch (e) {}
+        recognitionRef.current = null;
+      }
 
-        const langMap: Record<string, string> = {
-          en: 'en-IN',
-          hi: 'hi-IN',
-          te: 'te-IN',
-          ta: 'ta-IN',
-          kn: 'kn-IN'
-        };
-        utterance.lang = langMap[lang] || 'en-IN';
-        utterance.rate = 1.0;
-        utterance.pitch = 1.0;
+      isSpeakingRef.current = true;
+      setCallSubState('speaking');
 
-        isSpeakingRef.current = true;
-        setCallSubState('speaking');
-
-        let resolved = false;
-        const finish = () => {
-          if (resolved) return;
-          resolved = true;
-          isSpeakingRef.current = false;
-          if (speechTimeoutRef.current) {
-            clearTimeout(speechTimeoutRef.current);
-            speechTimeoutRef.current = null;
-          }
-          currentUtteranceRef.current = null;
-          setCallSubState('idle');
-          resolve();
-
-          // Transition back to active listening after a safe delay so speaker audio doesn't loop
-          if (callActiveRef.current && !micMutedRef.current) {
-            setTimeout(() => {
-              if (callActiveRef.current && !micMutedRef.current && !isSpeakingRef.current) {
-                startListeningSession();
-              }
-            }, 500);
-          }
-        };
-
-        utterance.onend = finish;
-        utterance.onerror = finish;
-
-        // Safety timeout so Chrome never hangs on dropped onend events!
-        const wordCount = (text || '').split(' ').length;
-        const maxDurationMs = Math.max(3000, wordCount * 380 + 1200);
-        speechTimeoutRef.current = setTimeout(finish, maxDurationMs);
-
-        window.speechSynthesis.speak(utterance);
-      } catch (err) {
-        console.warn('Speech synthesis error:', err);
+      let resolved = false;
+      const finish = () => {
+        if (resolved) return;
+        resolved = true;
         isSpeakingRef.current = false;
+        if (speechTimeoutRef.current) {
+          clearTimeout(speechTimeoutRef.current);
+          speechTimeoutRef.current = null;
+        }
+        currentUtteranceRef.current = null;
+        currentAudioRef.current = null;
         setCallSubState('idle');
         resolve();
+
+        // 600ms acoustic grace period for speaker decay before re-arming the microphone
         if (callActiveRef.current && !micMutedRef.current) {
-          startListeningSession();
+          setTimeout(() => {
+            if (callActiveRef.current && !micMutedRef.current && !isSpeakingRef.current) {
+              startListeningSession();
+            }
+          }, 600);
         }
-      }
+      };
+
+      // 1. Primary: High-fidelity Server Audio TTS (guarantees real Telugu, Hindi, Tamil, Kannada audio)
+      const tryServerAudio = async (): Promise<boolean> => {
+        try {
+          const res = await apiFetch('/api/voice/tts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, language: lang })
+          });
+
+          if (res.ok) {
+            const blob = await res.blob();
+            if (blob && blob.size > 200) {
+              const audioUrl = URL.createObjectURL(blob);
+              const audio = new Audio(audioUrl);
+              currentAudioRef.current = audio;
+
+              audio.onended = () => {
+                URL.revokeObjectURL(audioUrl);
+                finish();
+              };
+
+              audio.onerror = () => {
+                URL.revokeObjectURL(audioUrl);
+                fallbackBrowserTTS();
+              };
+
+              // Safety timeout
+              const wordCount = (text || '').split(' ').length;
+              const maxDurationMs = Math.max(4000, wordCount * 500 + 3000);
+              speechTimeoutRef.current = setTimeout(finish, maxDurationMs);
+
+              await audio.play();
+              return true;
+            }
+          }
+        } catch (err) {
+          console.warn('Server TTS fetch error, switching to browser synthesis fallback:', err);
+        }
+        return false;
+      };
+
+      // 2. Fallback: Browser Web Speech Synthesis
+      const fallbackBrowserTTS = () => {
+        if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+          finish();
+          return;
+        }
+
+        try {
+          window.speechSynthesis.resume();
+          const utterance = new SpeechSynthesisUtterance(text);
+          currentUtteranceRef.current = utterance;
+
+          const langMap: Record<string, string> = {
+            en: 'en-IN',
+            hi: 'hi-IN',
+            te: 'te-IN',
+            ta: 'ta-IN',
+            kn: 'kn-IN'
+          };
+          utterance.lang = langMap[lang] || 'en-IN';
+          utterance.rate = 1.0;
+          utterance.pitch = 1.0;
+
+          utterance.onend = finish;
+          utterance.onerror = finish;
+
+          const wordCount = (text || '').split(' ').length;
+          const maxDurationMs = Math.max(3000, wordCount * 380 + 1500);
+          speechTimeoutRef.current = setTimeout(finish, maxDurationMs);
+
+          window.speechSynthesis.speak(utterance);
+        } catch (err) {
+          console.warn('Speech synthesis error:', err);
+          finish();
+        }
+      };
+
+      tryServerAudio().then((played) => {
+        if (!played) {
+          fallbackBrowserTTS();
+        }
+      });
     });
   };
 

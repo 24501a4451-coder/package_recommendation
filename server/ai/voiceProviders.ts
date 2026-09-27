@@ -46,7 +46,7 @@ export interface TTSProvider {
  * Uses Gemini's native multimodal audio perception for speech-to-text.
  */
 export class GeminiAudioSTTProvider implements STTProvider {
-  public readonly name = 'Gemini-3.8-Flash-Audio (Multilingual)';
+  public readonly name = 'Gemini Audio Perception (Multilingual)';
   private ai: GoogleGenAI | null = null;
 
   constructor() {
@@ -72,20 +72,32 @@ export class GeminiAudioSTTProvider implements STTProvider {
 Language hint: ${languageHint || 'Detect automatically (English, Hindi, Telugu, Tamil, etc.)'}.
 Return ONLY the transcribed text. Do not add commentary or quotes.`;
 
-    const response = await this.ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: {
-        parts: [
-          {
-            inlineData: {
-              mimeType: mimeType || 'audio/webm',
-              data: base64Data
-            }
-          },
-          { text: prompt }
-        ]
-      }
-    });
+    const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+    let response: any = null;
+
+    for (const modelName of candidateModels) {
+      try {
+        response = await this.ai.models.generateContent({
+          model: modelName,
+          contents: {
+            parts: [
+              {
+                inlineData: {
+                  mimeType: mimeType || 'audio/webm',
+                  data: base64Data
+                }
+              },
+              { text: prompt }
+            ]
+          }
+        });
+        if (response) break;
+      } catch (e) {}
+    }
+
+    if (!response) {
+      throw new Error('Audio transcription service unavailable.');
+    }
 
     const text = response.text?.trim() || '';
     return {

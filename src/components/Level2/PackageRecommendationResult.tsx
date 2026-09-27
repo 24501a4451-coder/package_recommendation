@@ -71,7 +71,7 @@ export const PackageRecommendationResult: React.FC<Props> = ({
           imageUrl: record.generatedPackagingImage,
           prompt: record.packagingImagePrompt,
           disclaimer: 'AI-generated visualization of your recommended packaging configuration.',
-          model: 'gemini-3.1-flash-image',
+          model: 'imagen-3.0-generate-002',
           provider: 'Gemini Commercial Image Provider',
           license: 'Google Generative AI Developer Terms'
         }
@@ -142,7 +142,7 @@ export const PackageRecommendationResult: React.FC<Props> = ({
           prompt: data.prompt,
           specSummary: data.specSummary,
           disclaimer: data.disclaimer || 'AI-generated visualization of your recommended packaging configuration.',
-          model: data.model || 'gemini-3.1-flash-image',
+          model: data.model || 'imagen-3.0-generate-002',
           provider: data.provider || 'Gemini Commercial Image Provider',
           license: data.license || 'Google Generative AI Developer Terms'
         });
@@ -312,7 +312,7 @@ export const PackageRecommendationResult: React.FC<Props> = ({
                 {visualPreview?.provider || 'Commercial AI Visualization Provider'}
               </span>
               <span className="text-[10px] font-mono text-slate-400">
-                Model: {visualPreview?.model || 'gemini-3.1-flash-image / FLUX.1-schnell'} • License: {visualPreview?.license || 'Google Developer Terms / Apache 2.0'}
+                Model: {visualPreview?.model || 'imagen-3.0-generate-002 / FLUX.1-schnell'} • License: {visualPreview?.license || 'Google Developer Terms / Apache 2.0'}
               </span>
             </div>
             <h2 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">
@@ -525,7 +525,7 @@ export const PackageRecommendationResult: React.FC<Props> = ({
                 Dynamic Gemini Image Generation Prompt
               </span>
               <span className="text-[10px] font-mono text-slate-500">
-                Model: {visualPreview.model || 'gemini-3.1-flash-image'}
+                Model: {visualPreview.model || 'imagen-3.0-generate-002'}
               </span>
             </div>
             <p className="text-slate-300 text-xs leading-relaxed font-mono whitespace-pre-line bg-slate-900/60 p-3 rounded-lg border border-slate-800">

@@ -242,11 +242,26 @@ Return STRICT JSON ONLY:
   "lastQuestionKey": "string"
 }`;
 
-    const response = await this.ai!.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: { responseMimeType: 'application/json' }
-    });
+    const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+    let response: any = null;
+    let lastError: any = null;
+
+    for (const modelName of candidateModels) {
+      try {
+        response = await this.ai!.models.generateContent({
+          model: modelName,
+          contents: prompt,
+          config: { responseMimeType: 'application/json' }
+        });
+        if (response) break;
+      } catch (err: any) {
+        lastError = err;
+      }
+    }
+
+    if (!response) {
+      return this.converseWithDynamicAgent(speech, history, context, language);
+    }
 
     let parsed: any = {};
     try {
@@ -447,34 +462,35 @@ Return STRICT JSON ONLY:
 
     // A. Produce / Commodity
     const cropMappings: [RegExp, string][] = [
-      [/tomato|tamatar|tamata|thakkali/i, 'Fresh Tomatoes'],
-      [/strawberr|berr/i, 'Fresh Strawberries'],
-      [/mango|aam|mamidi|maambazham/i, 'Ripening Mangoes'],
-      [/mushroom|puttagodugu|dhingri|kalan/i, 'Button Mushrooms'],
-      [/broccoli/i, 'Broccoli Florets'],
-      [/onion|pyaz|kanda|ullipaya|vengayam/i, 'Potatoes / Onions'],
-      [/potato|aloo|aalu|bangaladumpa|urulaikizhangu/i, 'Potatoes / Onions'],
-      [/spinach|palak|palakura|leafy|salad|greens|keerai|saag/i, 'Fresh Cut Salad Greens'],
-      [/grape|angoor|draksha|thiratchai/i, 'Table Grapes'],
-      [/banana|kela|arati|vazhaipazham/i, 'Bananas'],
-      [/carrot|gajar/i, 'Carrots'],
-      [/capsicum|bell pepper|shimla mirch/i, 'Bell Peppers / Capsicum'],
-      [/chilli|chili|mirchi|pasi milagai/i, 'Bell Peppers / Capsicum'],
-      [/okra|bhindi|bhendi|lady'?s? finger|bendakaya|vendaikkai/i, 'Fresh Cut Salad Greens'],
-      [/cauliflower|gobhi|phool gobhi/i, 'Broccoli Florets'],
-      [/cabbage|patta gobhi|muttaikose/i, 'Fresh Cut Salad Greens'],
-      [/cucumber|khira|kheera|dosakaya|vellarikkai/i, 'Fresh Cut Salad Greens'],
-      [/papaya|papita|boppayi|pappali/i, 'Ripening Mangoes'],
-      [/guava|amrood|jama|koyya/i, 'Ripening Mangoes'],
-      [/pomegranate|anar|danimma|madhulampazham/i, 'Table Grapes'],
-      [/apple|seb/i, 'Table Grapes'],
-      [/orange|citrus|mosambi|santra|battayi/i, 'Table Grapes'],
-      [/watermelon|tarbooj|puchakaya/i, 'Ripening Mangoes'],
-      [/bean|french bean|chikkudukaya/i, 'Fresh Cut Salad Greens'],
-      [/bitter gourd|karela|kakarakaya/i, 'Fresh Cut Salad Greens'],
-      [/bottle gourd|lauki|sorakaya/i, 'Fresh Cut Salad Greens'],
-      [/ginger|adrak|allam/i, 'Potatoes / Onions'],
-      [/garlic|lasun|lahsun|vellulli/i, 'Potatoes / Onions']
+      [/tomato|tamatar|tamata|thakkali|టమాటా|టమాటాలు/i, 'Fresh Tomatoes'],
+      [/strawberr|berr|స్ట్రాబెర్రీ|స్ట్రాబెర్రీలు/i, 'Fresh Strawberries'],
+      [/mango|aam|mamidi|maambazham|మామిడి|మామిడికాయలు|మామిడిపండ్లు/i, 'Ripening Mangoes'],
+      [/mushroom|puttagodugu|dhingri|kalan|పుట్టగొడుగులు|పుట్టగొడుగు/i, 'Button Mushrooms'],
+      [/broccoli|బ్రోకలీ/i, 'Broccoli Florets'],
+      [/onion|pyaz|kanda|ullipaya|vengayam|ఉల్లిపాయలు|ఉల్లిపాయ/i, 'Potatoes / Onions'],
+      [/potato|aloo|aalu|bangaladumpa|urulaikizhangu|బంగాళాదుంప|బంగాళాదుంపలు/i, 'Potatoes / Onions'],
+      [/spinach|palak|palakura|leafy|salad|greens|keerai|saag|ఆకుకూరలు|పాలకూర/i, 'Fresh Cut Salad Greens'],
+      [/grape|angoor|draksha|thiratchai|ద్రాక్ష|ద్రాక్షపండ్లు/i, 'Table Grapes'],
+      [/banana|kela|arati|vazhaipazham|అరటి|అరటిపండ్లు/i, 'Bananas'],
+      [/carrot|gajar|క్యారెట్లు|క్యారెట్/i, 'Carrots'],
+      [/capsicum|bell pepper|shimla mirch|క్యాప్సికమ్/i, 'Bell Peppers / Capsicum'],
+      [/chilli|chili|mirchi|pasi milagai|మిర్చి|పచ్చిమిర్చి/i, 'Bell Peppers / Capsicum'],
+      [/okra|bhindi|bhendi|lady'?s? finger|bendakaya|vendaikkai|బెండకాయ|బెండకాయలు/i, 'Fresh Cut Salad Greens'],
+      [/brinjal|eggplant|baingan|vankaya|వంకాయ|వంకాయలు/i, 'Fresh Cut Salad Greens'],
+      [/cauliflower|gobhi|phool gobhi|కాలీఫ్లవర్/i, 'Broccoli Florets'],
+      [/cabbage|patta gobhi|muttaikose|క్యాబేజీ/i, 'Fresh Cut Salad Greens'],
+      [/cucumber|khira|kheera|dosakaya|vellarikkai|దోసకాయ/i, 'Fresh Cut Salad Greens'],
+      [/papaya|papita|boppayi|pappali|బొప్పాయి/i, 'Ripening Mangoes'],
+      [/guava|amrood|jama|koyya|జామకాయ/i, 'Ripening Mangoes'],
+      [/pomegranate|anar|danimma|madhulampazham|దానిమ్మ/i, 'Table Grapes'],
+      [/apple|seb|యాపిల్/i, 'Table Grapes'],
+      [/orange|citrus|mosambi|santra|battayi|బత్తాయి|నారింజ/i, 'Table Grapes'],
+      [/watermelon|tarbooj|puchakaya|పుచ్చకాయ/i, 'Ripening Mangoes'],
+      [/bean|french bean|chikkudukaya|చిక్కుడుకాయ/i, 'Fresh Cut Salad Greens'],
+      [/bitter gourd|karela|kakarakaya|కాకరకాయ/i, 'Fresh Cut Salad Greens'],
+      [/bottle gourd|lauki|sorakaya|సొరకాయ/i, 'Fresh Cut Salad Greens'],
+      [/ginger|adrak|allam|అల్లం/i, 'Potatoes / Onions'],
+      [/garlic|lasun|lahsun|vellulli|వెల్లుల్లి/i, 'Potatoes / Onions']
     ];
 
     for (const [regex, commodityName] of cropMappings) {
@@ -489,25 +505,25 @@ Return STRICT JSON ONLY:
     }
 
     // B. Variety
-    if (textLower.includes('desi') || textLower.includes('country') || textLower.includes('nattu') || textLower.includes('heirloom')) {
+    if (textLower.includes('desi') || textLower.includes('country') || textLower.includes('nattu') || textLower.includes('heirloom') || textLower.includes('నాటు') || textLower.includes('దేసి')) {
       updated.variety = 'Desi / Heirloom';
       extractedFacts.variety = updated.variety;
       if (!updated.confirmedFields.includes('variety')) updated.confirmedFields.push('variety');
-    } else if (textLower.includes('hybrid') || textLower.includes('roma') || textLower.includes('f1')) {
+    } else if (textLower.includes('hybrid') || textLower.includes('roma') || textLower.includes('f1') || textLower.includes('హైబ్రిడ్')) {
       updated.variety = 'Commercial Hybrid';
       extractedFacts.variety = updated.variety;
       if (!updated.confirmedFields.includes('variety')) updated.confirmedFields.push('variety');
     }
 
     // C. Freshness & Harvest Maturity
-    if (textLower.includes('fresh') || textLower.includes('harvested today') || textLower.includes('just picked') || textLower.includes('picked today')) {
+    if (textLower.includes('fresh') || textLower.includes('harvested today') || textLower.includes('just picked') || textLower.includes('picked today') || textLower.includes('తాజా') || textLower.includes('కోసిన') || textLower.includes('ఈ రోజే')) {
       updated.freshness = 'Freshly Harvested';
       extractedFacts.freshness = updated.freshness;
       if (!updated.confirmedFields.includes('freshness')) updated.confirmedFields.push('freshness');
     }
 
     // D. Quantity
-    const qtyMatch = textLower.match(/(\d+(?:\.\d+)?)\s*(kg|kilos|kilograms|quintals|quintal|tons|ton|crates|boxes|bags|baskets)/i);
+    const qtyMatch = textLower.match(/(\d+(?:\.\d+)?)\s*(kg|kilos|kilograms|quintals|quintal|tons|ton|crates|boxes|bags|baskets|కేజీలు|కేజీ|క్వింటాళ్ళు|టన్నులు)/i);
     if (qtyMatch) {
       updated.quantity = `${qtyMatch[1]} ${qtyMatch[2]}`;
       extractedFacts.quantity = updated.quantity;
@@ -535,16 +551,21 @@ Return STRICT JSON ONLY:
       textLower.includes('tempo') ||
       textLower.includes('journey') ||
       textLower.includes('travel') ||
-      textLower.includes('road')
+      textLower.includes('road') ||
+      textLower.includes('మార్కెట్') ||
+      textLower.includes('మండి') ||
+      textLower.includes('రవాణా') ||
+      textLower.includes('తీసుకెళ్') ||
+      textLower.includes('పంప')
     ) {
       updated.packagingPurpose = 'Transportation';
       extractedFacts.packagingPurpose = 'Transportation';
       if (!updated.confirmedFields.includes('packagingPurpose')) updated.confirmedFields.push('packagingPurpose');
-    } else if (textLower.includes('storage') || textLower.includes('store') || textLower.includes('godown') || textLower.includes('warehouse')) {
+    } else if (textLower.includes('storage') || textLower.includes('store') || textLower.includes('godown') || textLower.includes('warehouse') || textLower.includes('నిల్వ')) {
       updated.packagingPurpose = 'Storage';
       extractedFacts.packagingPurpose = 'Storage';
       if (!updated.confirmedFields.includes('packagingPurpose')) updated.confirmedFields.push('packagingPurpose');
-    } else if (textLower.includes('export') || textLower.includes('air') || textLower.includes('abroad')) {
+    } else if (textLower.includes('export') || textLower.includes('air') || textLower.includes('abroad') || textLower.includes('ఎగుమతి')) {
       updated.packagingPurpose = 'Export';
       extractedFacts.packagingPurpose = 'Export';
       if (!updated.confirmedFields.includes('packagingPurpose')) updated.confirmedFields.push('packagingPurpose');
@@ -554,7 +575,9 @@ Return STRICT JSON ONLY:
     const parseWordNumber = (val: string): number => {
       const numMap: Record<string, number> = {
         a: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
-        twelve: 12, fourteen: 14, fifteen: 15, twenty: 20, 'twenty-four': 24, 'twenty four': 24, 'forty-eight': 48, 'forty eight': 48
+        twelve: 12, fourteen: 14, fifteen: 15, twenty: 20, 'twenty-four': 24, 'twenty four': 24, 'forty-eight': 48, 'forty eight': 48,
+        'ఒక': 1, 'ఒకటి': 1, 'రెండు': 2, 'మూడు': 3, 'నాలుగు': 4, 'ఐదు': 5, 'ఆరు': 6, 'ఏడు': 7, 'ఎనిమిది': 8, 'తొమ్మిది': 9, 'పది': 10, 'ఇరవై': 20,
+        'एक': 1, 'दो': 2, 'तीन': 3, 'चार': 4, 'पांच': 5, 'पाँच': 5, 'छह': 6, 'सात': 7, 'आठ': 8, 'नौ': 9, 'दस': 10
       };
       const v = val.toLowerCase().trim();
       if (numMap[v] !== undefined) return numMap[v];
@@ -562,9 +585,9 @@ Return STRICT JSON ONLY:
       return isNaN(parsed) ? 1 : parsed;
     };
 
-    const dayMatch = textLower.match(/(\d+|one|two|three|four|five|six|seven|eight|nine|ten|a couple of|few)\s*(?:days|day)/i);
-    const hourMatch = textLower.match(/(\d+|one|two|three|four|five|six|seven|eight|nine|ten|twelve|twenty-four|twenty four|forty-eight|forty eight)\s*(?:hours|hrs|hr)/i);
-    const weekMatch = textLower.match(/(\d+|one|two|three|four)\s*(?:weeks|week)/i);
+    const dayMatch = textLower.match(/(\d+|one|two|three|four|five|six|seven|eight|nine|ten|a couple of|few|ఒకటి|ఒక|రెండు|మూడు|నాలుగు|ఐదు|ఆరు|ఏడు|ఎనిమిది|తొమ్మిది|పది|एक|दो|तीन|चार|पांच|छह|सात|आठ|नौ|दस)\s*(?:days|day|రోజులు|రోజు|rojulu|roju|din|dina)/i);
+    const hourMatch = textLower.match(/(\d+|one|two|three|four|five|six|seven|eight|nine|ten|twelve|twenty-four|twenty four|forty-eight|forty eight|ఒకటి|ఒక|రెండు|మూడు|నాలుగు|ఐదు|ఆరు|ఏడు|ఎనిమిది|తొమ్మిది|పది|ఇరవై|एक|दो|तीन|चार|पांच|छह|सात|आठ|नौ|दस)\s*(?:hours|hrs|hr|గంటలు|గంట|gantalu|ganta|ghante|ghanta)/i);
+    const weekMatch = textLower.match(/(\d+|one|two|three|four|ఒకటి|ఒక|రెండు|మూడు|నాలుగు|एक|दो|तीन|चार)\s*(?:weeks|week|వారాలు|వారం|saptaah|hafte)/i);
 
     if (dayMatch) {
       const raw = dayMatch[1].toLowerCase();
@@ -589,17 +612,36 @@ Return STRICT JSON ONLY:
       updated.transportDuration = days;
       extractedFacts.transportDurationDays = days;
       if (!updated.confirmedFields.includes('duration')) updated.confirmedFields.push('duration');
-    } else if (textLower.includes('tomorrow') && !textLower.includes('day after tomorrow')) {
+    } else if (
+      (textLower.includes('tomorrow') && !textLower.includes('day after tomorrow')) ||
+      textLower.includes('రేపు') ||
+      textLower.includes('repu') ||
+      textLower.includes('kal')
+    ) {
       updated.transportDurationDays = 1;
       updated.transportDuration = 1;
       extractedFacts.transportDurationDays = 1;
       if (!updated.confirmedFields.includes('duration')) updated.confirmedFields.push('duration');
-    } else if (textLower.includes('day after tomorrow')) {
+    } else if (
+      textLower.includes('day after tomorrow') ||
+      textLower.includes('ఎల్లుండి') ||
+      textLower.includes('ellundi') ||
+      textLower.includes('parson')
+    ) {
       updated.transportDurationDays = 2;
       updated.transportDuration = 2;
       extractedFacts.transportDurationDays = 2;
       if (!updated.confirmedFields.includes('duration')) updated.confirmedFields.push('duration');
-    } else if (textLower.includes('today evening') || textLower.includes('tonight') || textLower.includes('same day') || textLower.includes('by evening') || textLower.includes('few hours')) {
+    } else if (
+      textLower.includes('today evening') ||
+      textLower.includes('tonight') ||
+      textLower.includes('same day') ||
+      textLower.includes('by evening') ||
+      textLower.includes('few hours') ||
+      textLower.includes('ఈ రోజు సాయంత్రం') ||
+      textLower.includes('సాయంత్రం') ||
+      textLower.includes('రాత్రికి')
+    ) {
       updated.transportDurationDays = 1;
       updated.transportDuration = 1;
       extractedFacts.transportDurationDays = 1;
@@ -608,22 +650,44 @@ Return STRICT JSON ONLY:
 
     // G. Temperature & Cold Chain
     const hasRefrigerationNegation =
+      textLower.includes('normal temp') ||
+      textLower.includes('room temp') ||
+      textLower.includes('ambient') ||
+      textLower.includes('ordinary') ||
       textLower.includes('no cold') ||
       textLower.includes('without cold') ||
       textLower.includes('no refrig') ||
       textLower.includes('without refrig') ||
       textLower.includes("won't be refrig") ||
       textLower.includes('wont be refrig') ||
+      textLower.includes('not refrig') ||
       textLower.includes('non-ac') ||
       textLower.includes('non ac') ||
       textLower.includes('normal truck') ||
-      textLower.includes('ambient') ||
       textLower.includes('open vehicle') ||
       textLower.includes('normal tempo') ||
+      textLower.includes('open tempo') ||
+      textLower.includes('open truck') ||
       textLower.includes('no ac') ||
       textLower.includes('no fridge') ||
       textLower.includes('outside') ||
-      textLower.includes('ordinary vehicle');
+      textLower.includes('ordinary vehicle') ||
+      textLower.includes('ఏసీ లేదు') ||
+      textLower.includes('కోల్డ్ స్టోరేజ్ లేదు') ||
+      textLower.includes('సాధారణ ఉష్ణోగ్రత') ||
+      textLower.includes('మామూలు ఉష్ణోగ్రత') ||
+      textLower.includes('సాధారణ వాతావరణం') ||
+      textLower.includes('మామూలు బండి') ||
+      textLower.includes('సాధారణ వాహనం') ||
+      textLower.includes('చల్లదనం లేదు') ||
+      textLower.includes('ఎండ') ||
+      textLower.includes('వేడి') ||
+      textLower.includes('గది ఉష్ణోగ్రత') ||
+      textLower.includes('బయటే') ||
+      textLower.includes('सामान्य तापमान') ||
+      textLower.includes('बिना फ्रिज') ||
+      textLower.includes('एसी नहीं') ||
+      textLower.includes('साधारण गाड़ी');
 
     const hasRefrigerationPositive =
       !hasRefrigerationNegation &&
@@ -632,8 +696,18 @@ Return STRICT JSON ONLY:
         textLower.includes('chilled') ||
         textLower.includes('reefer') ||
         textLower.includes('ac truck') ||
+        textLower.includes('with ac') ||
         textLower.includes('cold chain') ||
-        textLower.includes('cold room'));
+        textLower.includes('cold room') ||
+        textLower.includes('కోల్డ్ స్టోరేజ్') ||
+        textLower.includes('ఏసీ ఉంది') ||
+        textLower.includes('చల్లగా') ||
+        textLower.includes('రెఫ్రిజిరేషన్') ||
+        textLower.includes('కోల్డ్ చైన్') ||
+        textLower.includes('కోల్డ్ రూమ్') ||
+        textLower.includes('कोल्ड स्टोरेज') ||
+        textLower.includes('रेफ्रिजरेटेड') ||
+        textLower.includes('एसी गाड़ी'));
 
     if (hasRefrigerationNegation) {
       updated.refrigeration = false;
@@ -647,7 +721,7 @@ Return STRICT JSON ONLY:
       if (!updated.confirmedFields.includes('temperature')) updated.confirmedFields.push('temperature');
     }
 
-    const tempMatch = textLower.match(/(\d+)\s*(?:degrees|degree|°c|c\b)/i);
+    const tempMatch = textLower.match(/(\d+)\s*(?:degrees|degree|°c|c\b|డిగ్రీలు|డిగ్రీ|डिग्री)/i);
     if (tempMatch) {
       const parsedTemp = parseInt(tempMatch[1], 10);
       updated.storageTemperature = parsedTemp;
@@ -658,7 +732,15 @@ Return STRICT JSON ONLY:
       else if (parsedTemp <= 10) updated.refrigeration = true;
     }
 
-    if (textLower.includes('hot') || textLower.includes('heat') || textLower.includes('garmi') || textLower.includes('scorching') || textLower.includes('summer')) {
+    if (
+      textLower.includes('hot') ||
+      textLower.includes('heat') ||
+      textLower.includes('garmi') ||
+      textLower.includes('scorching') ||
+      textLower.includes('summer') ||
+      textLower.includes('వేడి') ||
+      textLower.includes('ఎండ')
+    ) {
       if (!updated.storageTemperature || updated.storageTemperature < 28) {
         updated.storageTemperature = 30;
       }
@@ -676,17 +758,21 @@ Return STRICT JSON ONLY:
       textLower.includes('not sure') ||
       textLower.includes('not known') ||
       textLower.includes('teleedu') ||
+      textLower.includes('తెలీదు') ||
+      textLower.includes('తెలియదు') ||
+      textLower.includes('ఐడియా లేదు') ||
+      textLower.includes('గుర్తు లేదు') ||
       textLower.includes('pata nahi') ||
       textLower.includes('theriyathu') ||
       textLower.includes('gothilla');
 
     if (isUnknownStatement) {
-      if (textLower.includes('humidity') || updated.lastQuestion?.toLowerCase().includes('humid')) {
+      if (textLower.includes('humidity') || updated.lastQuestion?.toLowerCase().includes('humid') || textLower.includes('తేమ')) {
         if (!updated.unknownFields.includes('humidity')) updated.unknownFields.push('humidity');
         updated.humidity = updated.refrigeration ? 90 : 75; // safe agricultural default
         extractedFacts.unknownField = 'humidity';
       }
-      if (textLower.includes('temperature') || textLower.includes('temp') || updated.lastQuestion?.toLowerCase().includes('temperature')) {
+      if (textLower.includes('temperature') || textLower.includes('temp') || updated.lastQuestion?.toLowerCase().includes('temperature') || textLower.includes('ఉష్ణోగ్రత')) {
         if (!updated.unknownFields.includes('temperature')) updated.unknownFields.push('temperature');
         if (updated.storageTemperature === undefined || updated.storageTemperature === null) {
           updated.storageTemperature = 28;
@@ -695,7 +781,7 @@ Return STRICT JSON ONLY:
         if (!updated.confirmedFields.includes('temperature')) updated.confirmedFields.push('temperature');
         extractedFacts.unknownField = 'temperature';
       }
-      if (textLower.includes('duration') || textLower.includes('time') || textLower.includes('days') || updated.lastQuestion?.toLowerCase().includes('journey') || updated.lastQuestion?.toLowerCase().includes('transit')) {
+      if (textLower.includes('duration') || textLower.includes('time') || textLower.includes('days') || updated.lastQuestion?.toLowerCase().includes('journey') || updated.lastQuestion?.toLowerCase().includes('transit') || textLower.includes('సమయం') || textLower.includes('రోజులు')) {
         if (!updated.unknownFields.includes('duration')) updated.unknownFields.push('duration');
         if (!updated.transportDurationDays) {
           updated.transportDurationDays = 2;

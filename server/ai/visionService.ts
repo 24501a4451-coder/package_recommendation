@@ -122,15 +122,27 @@ Return ONLY a strictly valid JSON object matching this schema:
           }
         };
 
-        const response = await this.ai.models.generateContent({
-          model: 'gemini-3.8-flash',
-          contents: {
-            parts: [imagePart, { text: prompt + (userHint ? ` User provided context: ${userHint}` : '') }]
-          },
-          config: {
-            responseMimeType: 'application/json'
+        const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+        let response: any = null;
+        let lastErr: any = null;
+        for (const candidate of candidateModels) {
+          try {
+            response = await this.ai.models.generateContent({
+              model: candidate,
+              contents: {
+                parts: [imagePart, { text: prompt + (userHint ? ` User provided context: ${userHint}` : '') }]
+              },
+              config: {
+                responseMimeType: 'application/json'
+              }
+            });
+            if (response?.text) break;
+          } catch (mErr) {
+            lastErr = mErr;
+            continue;
           }
-        });
+        }
+        if (!response) throw lastErr || new Error('All Gemini vision models unavailable');
 
         let rawText = response.text?.trim() || '{}';
         // Remove markdown wrappers if any
@@ -241,15 +253,27 @@ Output JSON:
           }
         };
 
-        const response = await this.ai.models.generateContent({
-          model: 'gemini-3.8-flash',
-          contents: {
-            parts: [imagePart, { text: prompt + (specs ? ` Specifications: ${JSON.stringify(specs)}` : '') }]
-          },
-          config: {
-            responseMimeType: 'application/json'
+        const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+        let response: any = null;
+        let lastErr: any = null;
+        for (const candidate of candidateModels) {
+          try {
+            response = await this.ai.models.generateContent({
+              model: candidate,
+              contents: {
+                parts: [imagePart, { text: prompt + (specs ? ` Specifications: ${JSON.stringify(specs)}` : '') }]
+              },
+              config: {
+                responseMimeType: 'application/json'
+              }
+            });
+            if (response?.text) break;
+          } catch (mErr) {
+            lastErr = mErr;
+            continue;
           }
-        });
+        }
+        if (!response) throw lastErr || new Error('All Gemini vision models unavailable');
 
         const parsed = JSON.parse(response.text?.trim() || '{}');
         return {

@@ -50,13 +50,25 @@ Return JSON:
   "evidenceCited": ["string"]
 }`;
 
-        const response = await this.ai.models.generateContent({
-          model: 'gemini-3.8-flash',
-          contents: prompt,
-          config: {
-            responseMimeType: 'application/json'
+        const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+        let response: any = null;
+        let lastErr: any = null;
+        for (const candidate of candidateModels) {
+          try {
+            response = await this.ai.models.generateContent({
+              model: candidate,
+              contents: prompt,
+              config: {
+                responseMimeType: 'application/json'
+              }
+            });
+            if (response?.text) break;
+          } catch (mErr) {
+            lastErr = mErr;
+            continue;
           }
-        });
+        }
+        if (!response) throw lastErr || new Error('All Gemini assistant models unavailable');
 
         const parsed = JSON.parse(response.text?.trim() || '{}');
         return {

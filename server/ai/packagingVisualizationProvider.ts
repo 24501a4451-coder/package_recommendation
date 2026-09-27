@@ -2,7 +2,7 @@
  * FOODPACK-AI: Packaging Visualization Provider Abstractions
  * 
  * Supports open-weight models and real AI image APIs:
- * - Gemini Image Generation: gemini-3.1-flash-image
+ * - Gemini Image Generation: imagen-3.0-generate-002
  * - Open Model / Diffusers: FLUX.1-schnell (Apache 2.0 license) / SDXL (OpenRAIL++ license)
  * - Vector Fallback: Deterministic realistic SVG rendering (cleanly labeled as fallback)
  */
@@ -64,7 +64,7 @@ export interface PackagingVisualizationProvider {
 
 export class GeminiImageProvider implements PackagingVisualizationProvider {
   public readonly name = 'Gemini Commercial Image Provider';
-  public readonly model = 'gemini-3.1-flash-image';
+  public readonly model = 'imagen-3.0-generate-002';
   public readonly license = 'Google Generative AI Developer Terms';
   private ai: GoogleGenAI | null = null;
 
@@ -104,7 +104,7 @@ export class GeminiImageProvider implements PackagingVisualizationProvider {
       };
     }
 
-    const modelsToTry = ['gemini-3.1-flash-image', 'gemini-3.1-flash-lite-image'];
+    const modelsToTry = ['imagen-3.0-generate-002', 'gemini-2.0-flash-exp', 'imagen-3.0-fast-generate-001'];
     let lastError: any = null;
 
     for (const modelName of modelsToTry) {
