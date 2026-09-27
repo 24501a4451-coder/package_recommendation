@@ -63,12 +63,17 @@ export const PackageRecommendationResult: React.FC<Props> = ({
     specSummary?: any;
     disclaimer?: string;
     model?: string;
+    provider?: string;
+    license?: string;
   } | null>(
     record.generatedPackagingImage
       ? {
           imageUrl: record.generatedPackagingImage,
           prompt: record.packagingImagePrompt,
-          disclaimer: 'AI-generated visualization of your recommended packaging configuration.'
+          disclaimer: 'AI-generated visualization of your recommended packaging configuration.',
+          model: 'gemini-3.1-flash-image',
+          provider: 'Gemini Commercial Image Provider',
+          license: 'Google Generative AI Developer Terms'
         }
       : null
   );
@@ -137,7 +142,9 @@ export const PackageRecommendationResult: React.FC<Props> = ({
           prompt: data.prompt,
           specSummary: data.specSummary,
           disclaimer: data.disclaimer || 'AI-generated visualization of your recommended packaging configuration.',
-          model: data.model || 'gemini-3.1-flash-image'
+          model: data.model || 'gemini-3.1-flash-image',
+          provider: data.provider || 'Gemini Commercial Image Provider',
+          license: data.license || 'Google Generative AI Developer Terms'
         });
         // Save image to recommendation record
         record.generatedPackagingImage = data.imageUrl;
@@ -299,13 +306,13 @@ export const PackageRecommendationResult: React.FC<Props> = ({
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 sm:p-7 shadow-xl space-y-5">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
           <div>
-            <div className="flex items-center gap-2 mb-1">
+            <div className="flex flex-wrap items-center gap-2 mb-1">
               <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-indigo-400 bg-indigo-500/10 border border-indigo-500/20 px-2.5 py-0.5 rounded-full flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                Gemini Image Generation
+                {visualPreview?.provider || 'Commercial AI Visualization Provider'}
               </span>
               <span className="text-[10px] font-mono text-slate-400">
-                gemini-3.1-flash-image
+                Model: {visualPreview?.model || 'gemini-3.1-flash-image / FLUX.1-schnell'} • License: {visualPreview?.license || 'Google Developer Terms / Apache 2.0'}
               </span>
             </div>
             <h2 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">
@@ -459,8 +466,17 @@ export const PackageRecommendationResult: React.FC<Props> = ({
                     onClick={handleScrollToRecommendation}
                     className="px-4 py-2 bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl text-xs font-semibold cursor-pointer transition border border-slate-700/80 flex items-center gap-1.5"
                   >
-                    <FileText className="w-3.5 h-3.5 text-emerald-400" />
+                    <FileText className="w-3.5 h-3.5 text-indigo-400" />
                     <span>View Recommendation</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={onOpenReport}
+                    className="px-4 py-2 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 rounded-xl text-xs font-semibold cursor-pointer transition border border-emerald-500/30 flex items-center gap-1.5"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>View Detailed Analysis</span>
                   </button>
                 </div>
 

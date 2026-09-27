@@ -10,11 +10,13 @@ import { recommendationEngine, UserPreferences } from './server/engines/recommen
 import { levelEngines } from './server/engines/levelEngines';
 import { failureDiagnosisEngine } from './server/engines/failureDiagnosisEngine';
 import { ProcessingTransformation } from './server/engines/ruleEngine';
+import { farmerVoiceService } from './server/ai/farmerVoiceService';
+import { GeminiAudioSTTProvider, WhisperSTTProvider } from './server/ai/voiceProviders';
 
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 // Body parsing with 25MB limit for high-res food photos
 app.use(express.json({ limit: '25mb' }));
@@ -695,6 +697,64 @@ app.get('/api/level2/history', requireLevel(['LEVEL_2']), (req: Request, res: Re
 // 3. LEVEL 1: FRESH PRODUCE INTELLIGENCE
 // ==========================================
 
+// Real Farmer Expert-Buddy Voice Conversation API (Accessible during live voice calls)
+app.post('/api/voice/farmer-converse', async (req: Request, res: Response) => {
+  try {
+    const { message, history, currentContext, language } = req.body;
+    if (!message && (!history || history.length === 0)) {
+      return res.status(400).json({ error: 'Message or conversation context required.' });
+    }
+
+    const result = await farmerVoiceService.converse(
+      message || '',
+      Array.isArray(history) ? history : [],
+      currentContext || {},
+      language || 'en'
+    );
+
+    if (req.user) {
+      dataStore.log(
+        req.user.id,
+        'FARMER_VOICE_CONVERSATION',
+        'LEVEL_1',
+        `Farmer spoke: "${(message || '').slice(0, 60)}..." (Ready: ${result.readyForRecommendation})`
+      );
+    }
+
+    res.json(result);
+  } catch (err: any) {
+    console.error('Farmer voice conversation error:', err);
+    res.status(500).json({ error: 'Failed to process farmer voice turn', details: err?.message });
+  }
+});
+
+// Audio Speech-to-Text Transcription Service
+app.post('/api/voice/transcribe', async (req: Request, res: Response) => {
+  try {
+    const { audioBase64, mimeType, language } = req.body;
+    if (!audioBase64) {
+      return res.status(400).json({ error: 'Audio base64 data required.' });
+    }
+
+    const cleanBase64 = audioBase64.replace(/^data:[^;]+;base64,/, '').trim();
+    const buffer = Buffer.from(cleanBase64, 'base64');
+
+    // Prefer Whisper if configured, otherwise Gemini Audio STT
+    if (process.env.WHISPER_ENDPOINT) {
+      const whisper = new WhisperSTTProvider();
+      const stt = await whisper.transcribe(buffer, mimeType || 'audio/webm', language);
+      return res.json(stt);
+    }
+
+    const geminiAudio = new GeminiAudioSTTProvider();
+    const stt = await geminiAudio.transcribe(buffer, mimeType || 'audio/webm', language);
+    res.json(stt);
+  } catch (err: any) {
+    console.warn('Voice transcription fallback error:', err);
+    res.status(500).json({ error: 'Audio transcription failed', details: err?.message });
+  }
+});
+
 app.post('/api/recommend/level1', requireLevel(['LEVEL_1']), async (req: Request, res: Response) => {
   try {
     const input = req.body;
@@ -933,7 +993,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, () => {
+  app.listen(PORT, '0.0.0.0', () => {
     console.log(`====================================================`);
     console.log(` FOODPACK-AI Full-Stack Server Running on Port ${PORT}`);
     console.log(` SIH26236 Decision Support Engine Initialized`);

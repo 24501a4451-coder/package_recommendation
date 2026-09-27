@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Leaf, Wind, Thermometer, ShieldCheck, Award, ArrowRight, AlertTriangle, Droplets, Info, CheckCircle2, ChevronDown, ChevronUp } from 'lucide-react';
 import { apiFetch } from '../../utils/api';
 import { Level1Input, Level1RecommendationResult } from '../../../server/engines/levelEngines';
+import { FarmerVoiceAssistant } from './FarmerVoiceAssistant';
 
 export const FreshProduceIntelligence: React.FC = () => {
   const [commodityName, setCommodityName] = useState('Fresh Strawberries');
@@ -62,6 +63,21 @@ export const FreshProduceIntelligence: React.FC = () => {
     calculateRecommendation();
   };
 
+  const handleSyncVoiceParameters = (params: {
+    commodityName?: string;
+    storageTempC?: number;
+    transportDays?: number;
+    refrigeration?: boolean;
+    packagingFormat?: string;
+  }) => {
+    if (params.commodityName) setCommodityName(params.commodityName);
+    if (params.storageTempC !== undefined) setStorageTempC(params.storageTempC);
+    if (params.transportDays !== undefined) setTransportDays(params.transportDays);
+    if (params.refrigeration !== undefined) {
+      setStorageType(params.refrigeration ? 'Cold Storage (Refrigerated)' : 'Ambient Warehouse');
+    }
+  };
+
   return (
     <div className="space-y-8 max-w-5xl mx-auto text-slate-200 font-sans">
       
@@ -78,7 +94,10 @@ export const FreshProduceIntelligence: React.FC = () => {
         </p>
       </div>
 
-      {/* Input Form */}
+      {/* FEATURE 1: REAL FARMER EXPERT-BUDDY VOICE CONVERSATION INTERFACE */}
+      <FarmerVoiceAssistant onSyncParameters={handleSyncVoiceParameters} />
+
+      {/* Manual Input Form */}
       <form onSubmit={handleSubmit} className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 space-y-6 shadow-xl">
         <div className="border-b border-slate-800 pb-3 flex items-center justify-between">
           <div>
