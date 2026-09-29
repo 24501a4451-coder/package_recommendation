@@ -365,3 +365,5 @@ export interface RecommendationRecord {
   packagingImagePrompt?: string;
   createdAt: string;
 }
+
+export * from './packagingAsset';

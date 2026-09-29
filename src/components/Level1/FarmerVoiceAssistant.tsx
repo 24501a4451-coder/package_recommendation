@@ -33,6 +33,9 @@ import {
 } from '../../../server/ai/farmerVoiceService';
 import { Level1RecommendationResult } from '../../../server/engines/levelEngines';
 import { FarmerReportModal } from './FarmerReportModal';
+import { ProducePackagingVisualization } from './ProducePackagingVisualization';
+
+export type GeminiLiveVisualStatus = 'idle' | 'listening' | 'processing' | 'speaking';
 
 interface Props {
   onSyncParameters?: (params: {
@@ -42,9 +45,19 @@ interface Props {
     refrigeration?: boolean;
     packagingFormat?: string;
   }) => void;
+  onLiveStatusChange?: (status: GeminiLiveVisualStatus) => void;
+  onLanguageChange?: (language: 'en' | 'hi' | 'te' | 'ta' | 'kn') => void;
+  onExtractedContext?: (context: Partial<FarmerConversationContext>) => void;
+  externalContext?: Partial<FarmerConversationContext>;
 }
 
-export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
+export const FarmerVoiceAssistant: React.FC<Props> = ({
+  onSyncParameters,
+  onLiveStatusChange,
+  onLanguageChange,
+  onExtractedContext,
+  externalContext
+}) => {
   // Call States (Gemini Live / Siri / DeepSeek Call Paradigm)
   const [callActive, setCallActive] = useState(false);
   const [callMinimized, setCallMinimized] = useState(false);
@@ -124,6 +137,39 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  // Notify parent of Live status transitions (listening, processing, speaking, idle)
+  useEffect(() => {
+    if (!onLiveStatusChange) return;
+    if (callSubState === 'thinking') {
+      onLiveStatusChange('processing');
+    } else if (callSubState === 'listening' || callSubState === 'user_speaking') {
+      onLiveStatusChange('listening');
+    } else if (callSubState === 'speaking') {
+      onLiveStatusChange('speaking');
+    } else {
+      onLiveStatusChange('idle');
+    }
+  }, [callSubState, onLiveStatusChange]);
+
+  // Notify parent of detected/selected language change
+  useEffect(() => {
+    onLanguageChange?.(selectedLanguage);
+  }, [selectedLanguage, onLanguageChange]);
+
+  // Synchronize external context if supplied
+  useEffect(() => {
+    if (externalContext && Object.keys(externalContext).length > 0) {
+      setCurrentContext((prev) => ({
+        ...prev,
+        ...externalContext
+      }));
+      currentContextRef.current = {
+        ...currentContextRef.current,
+        ...externalContext
+      };
+    }
+  }, [externalContext]);
 
   // Call duration timer
   useEffect(() => {
@@ -679,6 +725,7 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
       if (data.updatedContext) {
         currentContextRef.current = data.updatedContext;
         setCurrentContext(data.updatedContext);
+        onExtractedContext?.(data.updatedContext);
         if (onSyncParameters) {
           onSyncParameters({
             commodityName: data.updatedContext.commodity,
@@ -730,12 +777,16 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
     micMutedRef.current = false;
     setCallMinimized(false);
 
-    // If starting fresh or prior harvest completed, initialize clean context
-    if (recommendation || !currentContextRef.current.commodity) {
-      currentContextRef.current = {};
-      setCurrentContext({});
+    // If starting fresh or prior harvest completed, initialize clean context (or inherit from externalContext)
+    if (recommendation) {
+      const initialCtx = (externalContext && Object.keys(externalContext).length > 0) ? { ...externalContext } : {};
+      currentContextRef.current = initialCtx;
+      setCurrentContext(initialCtx);
       setRecommendation(null);
       setDetailedReport(null);
+    } else if (!currentContextRef.current.commodity && externalContext && Object.keys(externalContext).length > 0) {
+      currentContextRef.current = { ...externalContext };
+      setCurrentContext({ ...externalContext });
     }
 
     const greetings: Record<string, string> = {
@@ -755,6 +806,18 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
     const updatedWithGreeting = [...messagesRef.current, greetingMsg];
     messagesRef.current = updatedWithGreeting;
     setMessages(updatedWithGreeting);
+    setCurrentContext((prev) => ({
+      ...prev,
+      currentQuestionOptions: [
+        'Fresh Tomatoes',
+        'Ripening Mangoes',
+        'Potatoes / Onions',
+        'Fresh Strawberries',
+        'Button Mushrooms',
+        'Leafy Greens',
+        'Other'
+      ]
+    }));
 
     // Speak initial greeting aloud; automatically listens when finished!
     await speakText(initialGreeting, selectedLanguage);
@@ -840,7 +903,7 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 rounded-full flex items-center gap-1.5">
                   <Radio className="w-3 h-3 text-emerald-400 animate-pulse" />
-                  Real-Time Voice Call Assistant (Gemini Live / DeepSeek Audio Call)
+                  Real-Time Voice Call Assistant (Gemini Live Audio Engine)
                 </span>
                 <span className="text-[10px] font-mono text-slate-400">
                   Full Duplex • Real-time Speech
@@ -891,7 +954,7 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
                 <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center animate-pulse">
                   <Phone className="w-5 h-5 text-white" />
                 </div>
-                <span>Start Live Voice Call</span>
+                <span>🎙️ Talk to AI • Start Voice Call</span>
               </button>
               <span className="text-[11px] text-slate-400 font-mono">
                 Hands-Free Audio Stream • Auto Speech Detection
@@ -1080,33 +1143,67 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
               )}
             </div>
 
-            {/* QUICK-TALK SUGGESTION PILLS (INSTANT ONE-TAP INPUT) */}
-            <div className="w-full max-w-2xl space-y-2 pt-1">
-              <span className="text-[10px] font-mono uppercase text-slate-400 font-bold block text-left">
-                💡 Quick Voice Prompts (Tap to say instantly):
-              </span>
-              <div className="flex flex-wrap items-center gap-2">
-                {[
-                  "I have 500kg of fresh tomatoes",
-                  "Takes 2 days to reach the mandi",
-                  "No cold storage, hot 30 degrees",
-                  "Can I use a cheaper package?",
-                  "Speak in Telugu",
-                  "Speak in Hindi"
-                ].map((phrase, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => handleUserSpeechInput(phrase)}
-                    className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white text-xs font-medium cursor-pointer transition shadow-xs"
-                  >
-                    "{phrase}"
-                  </button>
-                ))}
+            {/* DYNAMIC SUGGESTION CHIPS (TAP OR SPEAK) */}
+            {currentContext.currentQuestionOptions && currentContext.currentQuestionOptions.length > 0 ? (
+              <div className="w-full max-w-2xl space-y-2 pt-1 text-left">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-mono uppercase text-emerald-400 font-bold flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                    Tap an option or speak naturally:
+                  </span>
+                  <span className="text-[10px] text-slate-500 font-mono">Custom answers always accepted</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {currentContext.currentQuestionOptions.map((opt, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => {
+                        if (opt.toLowerCase().includes('other')) {
+                          const custom = prompt('Speak or type your custom requirement: (e.g. cherry tomatoes, reusable plastic crate)');
+                          if (custom && custom.trim()) {
+                            handleUserSpeechInput(custom.trim());
+                          }
+                        } else {
+                          handleUserSpeechInput(opt);
+                        }
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-500/40 text-emerald-200 hover:text-white text-xs font-semibold cursor-pointer transition shadow-xs flex items-center gap-1.5 active:scale-95"
+                    >
+                      <span>{opt}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
+            ) : (
+              /* DEFAULT QUICK PROMPTS */
+              <div className="w-full max-w-2xl space-y-2 pt-1">
+                <span className="text-[10px] font-mono uppercase text-slate-400 font-bold block text-left">
+                  💡 Quick Voice Prompts (Tap or speak):
+                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  {[
+                    "I have 500kg of fresh tomatoes",
+                    "Takes 6 hours to reach the mandi",
+                    "No cold storage, hot 30 degrees",
+                    "Can I use a cheaper package?",
+                    "Speak in Telugu",
+                    "English lo continue cheyyi"
+                  ].map((phrase, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => handleUserSpeechInput(phrase)}
+                      className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white text-xs font-medium cursor-pointer transition shadow-xs"
+                    >
+                      "{phrase}"
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
-            {/* LIVE PACKAGING CHECKLIST TILES */}
+            {/* LIVE HARVEST UNDERSTANDING CHECKLIST */}
             <div className="w-full max-w-2xl bg-slate-950/80 rounded-2xl border border-slate-800/80 p-3 sm:p-4 text-xs space-y-2">
               <div className="flex items-center justify-between border-b border-slate-800/60 pb-1.5">
                 <span className="text-[10px] font-mono uppercase font-bold text-slate-400 flex items-center gap-1.5">
@@ -1114,7 +1211,7 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
                   Live Harvest Understanding Checklist
                 </span>
                 <span className="text-[10px] font-mono text-emerald-400">
-                  Real-time Decision Support
+                  {currentContext.confirmedFields?.length || 0} facts confirmed
                 </span>
               </div>
 
@@ -1129,29 +1226,75 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
                 <div className="p-2 rounded-xl bg-slate-900 border border-slate-800">
                   <span className="text-slate-500 text-[10px] block font-mono">2. Transit Duration</span>
                   <span className="font-bold text-cyan-300 truncate block">
-                    {currentContext.transportDurationDays ? `✓ ${currentContext.transportDurationDays} Days` : 'Waiting for days...'}
+                    {currentContext.transportDurationDays || currentContext.transportDuration
+                      ? `✓ ${currentContext.transportDurationDays ? `${currentContext.transportDurationDays} Days` : `${currentContext.transportDuration} Hours`}`
+                      : 'Waiting for transit...'}
                   </span>
                 </div>
 
                 <div className="p-2 rounded-xl bg-slate-900 border border-slate-800">
-                  <span className="text-slate-500 text-[10px] block font-mono">3. Temperature Chain</span>
+                  <span className="text-slate-500 text-[10px] block font-mono">3. Temperature</span>
                   <span className="font-bold text-amber-300 truncate block">
                     {currentContext.refrigeration !== undefined
                       ? currentContext.refrigeration
                         ? '✓ Cold Storage (4°C)'
                         : `✓ Ambient (${currentContext.storageTemperature || 28}°C)`
-                      : 'Hot vs Cold storage?'}
+                      : 'Hot vs Cold?'}
                   </span>
                 </div>
 
                 <div className="p-2 rounded-xl bg-slate-900 border border-slate-800">
-                  <span className="text-slate-500 text-[10px] block font-mono">4. Logistics Purpose</span>
+                  <span className="text-slate-500 text-[10px] block font-mono">4. Target Buyer</span>
                   <span className="font-bold text-emerald-300 truncate block">
-                    {currentContext.packagingPurpose || 'Mandi Transportation'}
+                    {currentContext.targetBuyer || currentContext.packagingPurpose || 'Local Mandi'}
                   </span>
                 </div>
               </div>
             </div>
+
+            {/* POST-HARVEST CROP PROFILE (WHEN PRODUCE IS CONFIRMED) */}
+            {currentContext.commodity && (
+              <div className="w-full max-w-2xl bg-gradient-to-r from-emerald-950/40 via-slate-950 to-slate-900 rounded-2xl border border-emerald-500/30 p-3 sm:p-4 text-xs space-y-2 text-left">
+                <div className="flex items-center justify-between border-b border-emerald-500/20 pb-1.5">
+                  <span className="text-[10px] font-mono uppercase font-bold text-emerald-400 flex items-center gap-1.5">
+                    <Leaf className="w-3.5 h-3.5 text-emerald-400" />
+                    Post-Harvest Crop Profile
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-400">Strict Scientific DSS Baseline</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px]">
+                  <div>
+                    <span className="text-slate-500 text-[10px] block">Crop Type:</span>
+                    <span className="font-semibold text-white">{currentContext.commodity}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 text-[10px] block">Quantity:</span>
+                    <span className="font-semibold text-white">{currentContext.quantity || 'Standard Harvest Batch'}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 text-[10px] block">Freshness:</span>
+                    <span className="font-semibold text-emerald-300">{currentContext.freshness || 'Freshly Harvested'}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 text-[10px] block">Transit:</span>
+                    <span className="font-semibold text-cyan-300">
+                      {currentContext.transportDistance ? `${currentContext.transportDistance} • ` : ''}
+                      {currentContext.transportDurationDays ? `${currentContext.transportDurationDays} Days` : `${currentContext.transportDuration || 6} Hours`}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 text-[10px] block">Storage Chain:</span>
+                    <span className="font-semibold text-amber-300">
+                      {currentContext.refrigeration ? 'Refrigerated Cold Storage' : `Ambient (${currentContext.storageTemperature || 28}°C)`}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 text-[10px] block">Target Buyer:</span>
+                    <span className="font-semibold text-white">{currentContext.targetBuyer || 'Local Mandi / Wholesaler'}</span>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* IN-CALL TEXT INPUT FIELD (SO USER CAN TYPE OR SPEAK FREELY) */}
             <form onSubmit={handleSendTextMessage} className="w-full max-w-2xl flex items-center gap-2 pt-1">
@@ -1367,53 +1510,179 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
       ) : null}
 
       {/* ========================================================================= */}
-      {/* 4. FINAL RECOMMENDATION BANNER (PERSISTENT & ALWAYS VISIBLE ONCE GENERATED) */}
+      {/* 4. FINAL RECOMMENDATION (3 LEVELS + 8 PROBLEMS + PARCEL VISUALIZATION) */}
       {/* ========================================================================= */}
       {recommendation && (
-        <div className="p-5 sm:p-6 bg-gradient-to-r from-emerald-950/70 via-slate-900 to-slate-950 rounded-3xl border-2 border-emerald-500/50 space-y-4 shadow-2xl">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
+        <div className="p-6 sm:p-8 bg-gradient-to-r from-emerald-950/70 via-slate-900 to-slate-950 rounded-3xl border-2 border-emerald-500/50 space-y-6 shadow-2xl">
+          
+          {/* Top Header */}
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
             <div>
-              <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 rounded-full inline-block mb-1">
-                ✓ Call Recommendation Ready
+              <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-full inline-block mb-1.5">
+                ✓ Scientific Packaging Suite Ready
               </span>
-              <h3 className="text-xl font-bold text-white">
-                {recommendation.packagingStructure}
+              <h3 className="text-xl sm:text-2xl font-black text-white">
+                {currentContext.threeLevelRecommendation?.packageType.structure || recommendation.packagingStructure}
               </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Crop: <strong className="text-emerald-300">{currentContext.commodity || recommendation.commodity.name}</strong> • Transit: <span className="text-cyan-300">{currentContext.transportDurationDays ? `${currentContext.transportDurationDays} Days` : `${currentContext.transportDuration || 6} Hours`}</span> • Storage: <span className="text-amber-300">{currentContext.refrigeration ? 'Cold Storage (4°C)' : 'Ambient Temperature'}</span>
+              </p>
             </div>
-            <div className="text-right">
-              <span className="text-xs text-slate-400 block font-mono">Calculated Shelf Life</span>
-              <span className="text-lg font-bold text-emerald-400 font-mono">
-                {recommendation.estimatedShelfLifeDays.min} - {recommendation.estimatedShelfLifeDays.max} Days
+            <div className="text-left sm:text-right bg-slate-950/80 p-3 rounded-2xl border border-slate-800">
+              <span className="text-[10px] text-slate-400 block font-mono">Calculated Shelf Life</span>
+              <span className="text-xl font-black text-emerald-400 font-mono">
+                {recommendation.estimatedShelfLifeDays.min} – {recommendation.estimatedShelfLifeDays.max} Days
               </span>
+              <span className="text-[10px] text-slate-500 block font-mono">Respiration Controlled</span>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-            <div className="p-3 bg-slate-950 rounded-xl border border-slate-800">
-              <span className="text-slate-500 text-[10px] block font-mono">Material</span>
-              <span className="font-bold text-white text-sm">{recommendation.recommendedPackaging.name}</span>
-            </div>
-
-            <div className="p-3 bg-slate-950 rounded-xl border border-slate-800">
-              <span className="text-slate-500 text-[10px] block font-mono">Equilibrium MAP Gas Target</span>
-              <span className="font-bold text-emerald-300">
-                {recommendation.mapRecommendation.targetO2Percent} O₂ / {recommendation.mapRecommendation.targetCO2Percent} CO₂
+          {/* "WHY THIS PACKAGING?" DYNAMIC EXPLANATION BANNER */}
+          <div className="p-4 sm:p-5 rounded-2xl bg-indigo-950/40 border border-indigo-500/40 space-y-2 text-left">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-mono font-bold uppercase text-indigo-400 flex items-center gap-1.5">
+                <Volume2 className="w-4 h-4 text-indigo-400" />
+                Why this packaging? (AI Farmer Explanation):
               </span>
             </div>
+            <p className="text-sm text-indigo-100 leading-relaxed font-sans">
+              "{currentContext.threeLevelRecommendation?.whyExplanation || currentContext.threeLevelRecommendation?.whyExplanationSpoken || detailedReport?.spokenVoiceSummary || `We selected this breathable configuration because your ${currentContext.commodity} is freshly harvested and undergoes active metabolic respiration. The calibrated ventilation allows heat and vapor to egress without causing condensation rotting, while rigid container walls protect from transit vibration crushing.`}"
+            </p>
+          </div>
 
-            <div className="p-3 bg-slate-950 rounded-xl border border-slate-800">
-              <span className="text-slate-500 text-[10px] block font-mono">Micro-Perforations</span>
-              <span className="font-bold text-cyan-300 font-mono">
-                {recommendation.mapRecommendation.perforationDetails.required ? 'Laser Micro-Vents Active' : 'Standard Ventilation'}
-              </span>
+          {/* 3-LEVEL PACKAGING RECOMMENDATION TILES */}
+          <div className="space-y-3 text-left">
+            <span className="text-xs font-mono font-bold uppercase text-emerald-400 tracking-wider block">
+              📦 3-Level Packaging Specification:
+            </span>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              
+              {/* Level A: Material */}
+              <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 space-y-2">
+                <span className="text-[10px] font-mono uppercase font-bold text-slate-400 block">
+                  Level A • Recommended Material
+                </span>
+                <h4 className="text-sm font-bold text-white">
+                  {currentContext.threeLevelRecommendation?.material.name || recommendation.recommendedPackaging.name}
+                </h4>
+                <p className="text-xs text-slate-300">
+                  {currentContext.threeLevelRecommendation?.material.specification || `Thickness: ${recommendation.recommendedThicknessMicrons}µm`}
+                </p>
+                <div className="pt-1 text-[11px] text-slate-400 font-mono">
+                  OTR: {recommendation.recommendedPackaging.otr.value} cc • WVTR: {recommendation.recommendedPackaging.wvtr.value} g
+                </div>
+              </div>
+
+              {/* Level B: Package Type / Structure */}
+              <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 space-y-2">
+                <span className="text-[10px] font-mono uppercase font-bold text-slate-400 block">
+                  Level B • Package Structure
+                </span>
+                <h4 className="text-sm font-bold text-cyan-300">
+                  {currentContext.threeLevelRecommendation?.packageType.structure || 'Ventilated Produce Crate'}
+                </h4>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  {currentContext.threeLevelRecommendation?.packageType.description || recommendation.packagingStructure}
+                </p>
+                <div className="pt-1 text-[11px] text-emerald-400 font-mono">
+                  {currentContext.threeLevelRecommendation?.packageType.ventilationType || recommendation.mapRecommendation.perforationDetails.type}
+                </div>
+              </div>
+
+              {/* Level C: Packing Configuration & Method */}
+              <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 space-y-2">
+                <span className="text-[10px] font-mono uppercase font-bold text-slate-400 block">
+                  Level C • Packing Configuration
+                </span>
+                <div className="space-y-1 text-xs text-slate-300">
+                  <p><strong>Quantity:</strong> {currentContext.threeLevelRecommendation?.packingMethod.quantityPerPackage || '20-25 kg / container'}</p>
+                  <p><strong>Layering:</strong> {currentContext.threeLevelRecommendation?.packingMethod.layerArrangement || 'Max 3 layers arranged calyx-down'}</p>
+                  <p><strong>Vent Chimney:</strong> {currentContext.threeLevelRecommendation?.packingMethod.ventilationChimney || 'Align side slots along truck axis'}</p>
+                  <p><strong>Stacking:</strong> {currentContext.threeLevelRecommendation?.packingMethod.stackingLimits || 'Max 6 crates high'}</p>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          {/* AUTHORITATIVE REAL PACKAGING ASSET & DYNAMIC "HOW TO PACK" VISUALIZATION */}
+          <div className="pt-2 border-t border-slate-800">
+            <ProducePackagingVisualization
+              cropName={currentContext.commodity || recommendation.commodity.name}
+              recommendation={recommendation}
+              transportDays={currentContext.transportDurationDays || 3}
+              refrigeration={Boolean(currentContext.refrigeration)}
+              packagingFormatPreference={currentContext.packagingFormatPreference || undefined}
+              quantity={currentContext.quantity || undefined}
+            />
+          </div>
+
+          {/* THE EIGHT FARMER PROBLEMS ANALYSIS */}
+          <div className="space-y-3 text-left pt-2 border-t border-slate-800/80">
+            <span className="text-xs font-mono font-bold uppercase text-amber-400 tracking-wider block">
+              🛡️ The Eight Postharvest Farmer Risks & Mitigations:
+            </span>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+              {[
+                { title: '1. Post-Harvest Loss', risk: currentContext.farmerProblemsAnalysis?.postHarvestLossRisk.level || 'MEDIUM', desc: currentContext.farmerProblemsAnalysis?.postHarvestLossRisk.description || 'Controlled respiration slows tissue breakdown.' },
+                { title: '2. Bruising / Crushing', risk: currentContext.farmerProblemsAnalysis?.bruisingCrushingRisk.level || 'HIGH', desc: currentContext.farmerProblemsAnalysis?.bruisingCrushingRisk.description || 'Rigid side walls prevent load compression during transit.' },
+                { title: '3. Moisture / Spoilage', risk: currentContext.farmerProblemsAnalysis?.moistureSpoilageRisk.level || 'HIGH', desc: currentContext.farmerProblemsAnalysis?.moistureSpoilageRisk.description || 'Calibrated vents release dew-point moisture.' },
+                { title: '4. Market Price Impact', risk: currentContext.farmerProblemsAnalysis?.marketPriceImpact.level || 'HIGH', desc: currentContext.farmerProblemsAnalysis?.marketPriceImpact.description || 'Firm skin and no rots protects wholesale grading.' },
+                { title: '5. Weather Exposure', risk: currentContext.farmerProblemsAnalysis?.weatherExposureRisk.level || 'MEDIUM', desc: currentContext.farmerProblemsAnalysis?.weatherExposureRisk.description || 'Shaded crate stacking shields from direct heat.' },
+                { title: '6. Contamination Risk', risk: currentContext.farmerProblemsAnalysis?.contaminationRisk.level || 'MEDIUM', desc: currentContext.farmerProblemsAnalysis?.contaminationRisk.description || 'Elevated nesting feet isolate produce from truck bed dirt.' },
+                { title: '7. Traceability / Brand', risk: currentContext.farmerProblemsAnalysis?.traceabilityBrandingPotential.level || 'HIGH', desc: currentContext.farmerProblemsAnalysis?.traceabilityBrandingPotential.description || 'Placard supports farmer QR batch code.' },
+                { title: '8. Storage / Delayed Sale', risk: currentContext.farmerProblemsAnalysis?.storageDelayedSaleCapacity.level || 'HIGH', desc: currentContext.farmerProblemsAnalysis?.storageDelayedSaleCapacity.description || `Extends freshness window up to ${recommendation.estimatedShelfLifeDays.max} days.` }
+              ].map((item, idx) => (
+                <div key={idx} className="p-3 bg-slate-950 rounded-xl border border-slate-800/90 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-white">{item.title}</span>
+                    <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded-full font-bold ${
+                      item.risk === 'HIGH' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' :
+                      item.risk === 'MEDIUM' ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30' :
+                      'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                    }`}>
+                      {item.risk} RISK
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 leading-relaxed">{item.desc}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* VOICE FOLLOW-UP CHIPS (CONTINUOUS CONSULTATION) */}
+          <div className="space-y-2 pt-2 border-t border-slate-800/80 text-left">
+            <span className="text-[10px] font-mono uppercase text-slate-400 font-bold block">
+              🎙️ Ask follow-up questions by voice or tap:
+            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              {[
+                "Why did you choose this?",
+                "Cheaper option unda?",
+                "Biodegradable option unda?",
+                "What if transport takes 12 hours?",
+                "Cold storage unte?",
+                "English lo cheppu",
+                "తెలుగులో చెప్పు"
+              ].map((phrase, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => handleUserSpeechInput(phrase)}
+                  className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white text-xs font-medium cursor-pointer transition shadow-xs flex items-center gap-1"
+                >
+                  <Sparkles className="w-3 h-3 text-emerald-400" />
+                  <span>"{phrase}"</span>
+                </button>
+              ))}
             </div>
           </div>
 
           {/* Action Bar */}
-          <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80">
-            <p className="text-xs text-slate-300 italic">
-              "We have engineered calibrated respiration flux so your {currentContext.commodity || 'produce'} stays fresh without condensation rotting."
-            </p>
+          <div className="pt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80">
+            <span className="text-xs text-slate-400">
+              Traceable Recommendation • SIH26236 Validated Barrier Science
+            </span>
 
             <div className="flex items-center gap-2">
               {detailedReport && (
@@ -1423,11 +1692,12 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({ onSyncParameters }) => {
                   className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs cursor-pointer shadow-lg shadow-emerald-600/30 flex items-center gap-2 transition"
                 >
                   <FileText className="w-4 h-4" />
-                  <span>View Detailed Farmer Report</span>
+                  <span>Generate Detailed Farmer Report</span>
                 </button>
               )}
             </div>
           </div>
+
         </div>
       )}
 

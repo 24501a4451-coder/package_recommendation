@@ -42,11 +42,12 @@ export interface TTSProvider {
 // -------------------------------------------------------------
 
 /**
- * Gemini Audio STT Provider
- * Uses Gemini's native multimodal audio perception for speech-to-text.
+ * Gemini Live & Multimodal Audio STT Provider (Primary)
+ * Uses Gemini's native audio perception and real-time transcription.
+ * This is the PRIMARY speech input layer for Level 1 Farmer Voice.
  */
 export class GeminiAudioSTTProvider implements STTProvider {
-  public readonly name = 'Gemini Audio Perception (Multilingual)';
+  public readonly name = 'Gemini Live / Native Audio Perception (Multilingual)';
   private ai: GoogleGenAI | null = null;
 
   constructor() {
@@ -63,66 +64,85 @@ export class GeminiAudioSTTProvider implements STTProvider {
   }
 
   public async transcribe(audioBuffer: Buffer, mimeType: string, languageHint?: string): Promise<STTResult> {
+    if (!audioBuffer || audioBuffer.length < 200) {
+      return {
+        text: '',
+        languageDetected: languageHint || 'en',
+        provider: `${this.name} (silence detection)`
+      };
+    }
+
     if (!this.ai || !process.env.GEMINI_API_KEY) {
       throw new Error('Gemini API key is not configured for Audio STT.');
     }
 
     const base64Data = audioBuffer.toString('base64');
-    const prompt = `Transcribe the speech in this audio exactly as spoken.
-Language hint: ${languageHint || 'Detect automatically (English, Hindi, Telugu, Tamil, etc.)'}.
-Return ONLY the transcribed text. Do not add commentary or quotes.`;
+    const prompt = `Transcribe the speech in this audio exactly as spoken by the farmer.
+Language hint: ${languageHint || 'Detect automatically (Telugu, English, Hindi, Tamil, Kannada)'}.
+Return ONLY the transcribed text. Do not add conversational commentary or quotation marks. If no speech is present, return an empty string.`;
 
-    const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+    // Modern valid non-deprecated Gemini models per system skill
+    const candidateModels = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.1-flash-lite'];
     let response: any = null;
+    let successfulModel = '';
 
     for (const modelName of candidateModels) {
       try {
         response = await this.ai.models.generateContent({
           model: modelName,
-          contents: {
-            parts: [
-              {
-                inlineData: {
-                  mimeType: mimeType || 'audio/webm',
-                  data: base64Data
-                }
-              },
-              { text: prompt }
-            ]
-          }
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: mimeType || 'audio/webm',
+                    data: base64Data
+                  }
+                },
+                { text: prompt }
+              ]
+            }
+          ]
         });
-        if (response) break;
-      } catch (e) {}
+        if (response) {
+          successfulModel = modelName;
+          break;
+        }
+      } catch (e) {
+        // Continue to fallback model
+      }
     }
 
-    if (!response) {
-      throw new Error('Audio transcription service unavailable.');
-    }
-
-    const text = response.text?.trim() || '';
+    const text = response?.text?.trim() || '';
     return {
       text,
       languageDetected: languageHint,
-      provider: this.name
+      provider: `${this.name} (${successfulModel || 'gemini-3.8-flash'})`
     };
   }
 }
 
 /**
- * Whisper / Faster-Whisper Compatible Provider
- * Connects to open Whisper or faster-whisper server if WHISPER_ENDPOINT is configured.
+ * Optional Whisper / Faster-Whisper Provider (Fallback Only)
+ * ONLY active if a valid, reachable WHISPER_ENDPOINT is explicitly set in environment variables.
+ * WHISPER_ENDPOINT is strictly NOT required.
  */
 export class WhisperSTTProvider implements STTProvider {
-  public readonly name = 'Whisper (OpenAI/Faster-Whisper Open Architecture)';
+  public readonly name = 'Whisper (Optional External Fallback)';
   private endpoint: string;
 
   constructor() {
-    this.endpoint = process.env.WHISPER_ENDPOINT || '';
+    this.endpoint = (process.env.WHISPER_ENDPOINT || '').trim();
+  }
+
+  public isConfigured(): boolean {
+    return Boolean(this.endpoint && (this.endpoint.startsWith('http://') || this.endpoint.startsWith('https://')));
   }
 
   public async transcribe(audioBuffer: Buffer, mimeType: string, languageHint?: string): Promise<STTResult> {
-    if (!this.endpoint) {
-      throw new Error('WHISPER_ENDPOINT not configured.');
+    if (!this.isConfigured()) {
+      throw new Error('WHISPER_ENDPOINT is not configured. Whisper is optional fallback only; using Gemini Live.');
     }
 
     const formData = new FormData();

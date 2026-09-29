@@ -18,39 +18,101 @@ import { dataStore } from '../db/dataStore';
 import { PiperKokoroTTSProvider, GeminiAudioSTTProvider } from './voiceProviders';
 
 export interface FarmerConversationContext {
+  crop?: string | null;
   commodity?: string | null;
   variety?: string | null;
   freshness?: string | null;
   processingState?: string | null;
   maturity?: string | null;
   quantity?: string | null;
+  harvestStage?: string | null;
+  harvestDate?: string | null;
+  moistureSensitivity?: string | null;
+  respiration?: string | null;
   destination?: string | null;
+  transportDistance?: string | number | null;
+  transportDuration?: number | null;
+  transportDurationDays?: number | null;
+  transportMode?: string | null;
+  roadCondition?: string | null;
+  handlingFrequency?: string | null;
+  stackingCondition?: string | null;
+  ambientTemperature?: number | null;
   storageTemperature?: number | null;
   transportTemperature?: number | null;
   humidity?: number | null;
-  transportDuration?: number | null;
-  transportDurationDays?: number | null;
+  rainExposure?: boolean | null;
+  storageType?: string | null;
   storageDuration?: number | null;
   storageDurationDays?: number | null;
   desiredShelfLife?: number | null;
   targetShelfLifeDays?: number | null;
   refrigeration?: boolean | null;
+  refrigerationAvailable?: boolean | null;
+  targetBuyer?: string | null;
   packagingPurpose?: 'Transportation' | 'Storage' | 'Retail Market' | 'Export' | null;
   packagingFormatPreference?: string | null;
+  packagingPreference?: string | null;
   budget?: 'Economy' | 'Balanced' | 'Premium' | null;
+  budgetPreference?: string | null;
   sustainability?: 'Prefer recyclable' | 'Prefer biodegradable/compostable' | 'Normal' | null;
   sustainabilityPreference?: string | null;
+  brandingRequired?: boolean | null;
+  traceabilityRequired?: boolean | null;
+  farmName?: string | null;
+  batchNumber?: string | null;
   existingPackaging?: string | null;
   specialRequirements?: string[];
   confirmedFields?: string[];
   unknownFields?: string[];
+  assumptions?: string[];
   lastQuestion?: string | null;
+  lastQuestionKey?: string | null;
   askedQuestions?: string[];
   askedQuestionKeys?: string[];
+  currentQuestionOptions?: string[];
   conversationSummary?: string | null;
   turnCount?: number;
   userNotes?: string;
   recommendationDelivered?: boolean;
+  // 8 Farmer Problems Analysis
+  farmerProblemsAnalysis?: {
+    postHarvestLossRisk: { level: 'LOW' | 'MEDIUM' | 'HIGH'; description: string };
+    bruisingCrushingRisk: { level: 'LOW' | 'MEDIUM' | 'HIGH'; description: string };
+    moistureSpoilageRisk: { level: 'LOW' | 'MEDIUM' | 'HIGH'; description: string };
+    marketPriceImpact: { level: 'LOW' | 'MEDIUM' | 'HIGH'; description: string };
+    weatherExposureRisk: { level: 'LOW' | 'MEDIUM' | 'HIGH'; description: string };
+    contaminationRisk: { level: 'LOW' | 'MEDIUM' | 'HIGH'; description: string };
+    traceabilityBrandingPotential: { level: 'LOW' | 'MEDIUM' | 'HIGH'; description: string };
+    storageDelayedSaleCapacity: { level: 'LOW' | 'MEDIUM' | 'HIGH'; description: string };
+  };
+  // 3-Level Packaging Recommendation
+  threeLevelRecommendation?: {
+    material: {
+      name: string;
+      category: string;
+      specification: string;
+    };
+    packageType: {
+      structure: string;
+      description: string;
+      ventilationType: string;
+    };
+    packingMethod: {
+      quantityPerPackage: string;
+      layerArrangement: string;
+      cushioningAndSeparation: string;
+      ventilationChimney: string;
+      stackingLimits: string;
+      handlingInstructions: string;
+    };
+    whyExplanation: string;
+    whyExplanationSpoken: string;
+    transportInstructions: string;
+    storageInstructions: string;
+    potentialBenefits: string[];
+    alternatives: { name: string; tradeoff: string }[];
+  };
 }
 
 export interface ConversationTurn {
@@ -238,11 +300,12 @@ Return STRICT JSON ONLY:
     "budget": "Economy" | "Balanced" | "Premium" | null,
     "sustainability": "Prefer recyclable" | "Prefer biodegradable/compostable" | "Normal" | null
   },
+  "unknownFields": ["humidity" | "temperature" | "rh" | "variety" | "roadCondition"],
   "readyForRecommendation": boolean,
   "lastQuestionKey": "string"
 }`;
 
-    const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+    const candidateModels = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.1-flash-lite'];
     let response: any = null;
     let lastError: any = null;
 
@@ -293,6 +356,36 @@ Return STRICT JSON ONLY:
       }
     });
 
+    if (Array.isArray(parsed.unknownFields)) {
+      parsed.unknownFields.forEach((u: string) => {
+        const norm = (u || '').toLowerCase().trim();
+        if (norm && !updatedContext.unknownFields.includes(norm)) {
+          updatedContext.unknownFields.push(norm);
+        }
+      });
+    }
+
+    // Direct speech unknown detection for phrases like "don't know the humidity", "teliyadu", etc.
+    const speechLower = speech.toLowerCase();
+    if (speechLower.includes("don't know") || speechLower.includes("do not know") || speechLower.includes("not sure") || speechLower.includes("no idea") || speechLower.includes("teliyadu")) {
+      if ((speechLower.includes("humidity") || speechLower.includes("rh")) && !updatedContext.unknownFields.includes("humidity")) {
+        updatedContext.unknownFields.push("humidity");
+      }
+      if (speechLower.includes("variety") && !updatedContext.unknownFields.includes("variety")) {
+        updatedContext.unknownFields.push("variety");
+      }
+      if (speechLower.includes("distance") && !updatedContext.unknownFields.includes("distance")) {
+        updatedContext.unknownFields.push("distance");
+      }
+    }
+
+    if (speechLower.includes("no cold storage") || speechLower.includes("no refrigeration") || speechLower.includes("without cold storage") || speechLower.includes("cold storage ledu")) {
+      updatedContext.refrigeration = false;
+      if (!updatedContext.confirmedFields.includes('refrigeration')) {
+        updatedContext.confirmedFields.push('refrigeration');
+      }
+    }
+
     if (parsed.lastQuestionKey && !updatedContext.askedQuestionKeys?.includes(parsed.lastQuestionKey)) {
       updatedContext.askedQuestionKeys = [...(updatedContext.askedQuestionKeys || []), parsed.lastQuestionKey];
     }
@@ -324,7 +417,18 @@ Return STRICT JSON ONLY:
 
       recommendationResult = levelEngines.generateLevel1(engineInput);
       detailedReport = this.generateDetailedFarmerReport(updatedContext, history, speech, recommendationResult, parsed.reply);
+      updatedContext.crop = updatedContext.commodity;
+      updatedContext.refrigerationAvailable = updatedContext.refrigeration;
+      updatedContext.farmerProblemsAnalysis = this.analyzeFarmerProblems(updatedContext.commodity, updatedContext, recommendationResult);
+      updatedContext.threeLevelRecommendation = this.generateThreeLevelRecommendation(updatedContext.commodity, updatedContext, recommendationResult, detectedLang);
       updatedContext.recommendationDelivered = true;
+      updatedContext.currentQuestionOptions = [
+        'Why this packaging?',
+        'Cheaper option unda?',
+        'Biodegradable option unda?',
+        'What if transit takes 12 hours?',
+        'Cold storage unte?'
+      ];
     }
 
     this.logTurn({
@@ -530,7 +634,7 @@ Return STRICT JSON ONLY:
       if (!updated.confirmedFields.includes('quantity')) updated.confirmedFields.push('quantity');
     }
 
-    // E. Destination & Logistics Purpose
+    // E. Destination, Distance & Logistics Purpose
     const destMatch = textLower.match(/(?:to|send to|towards|for)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)/i);
     if (destMatch) {
       const candidate = destMatch[1].trim();
@@ -540,6 +644,72 @@ Return STRICT JSON ONLY:
         extractedFacts.destination = candidate;
         if (!updated.confirmedFields.includes('destination')) updated.confirmedFields.push('destination');
       }
+    }
+
+    // Distance Extraction (e.g. "120 kilometers away", "60 km", "120 కిలోమీటర్లు")
+    const distMatch = textLower.match(/(\d+(?:\.\d+)?)\s*(?:km|kms|kilometer|kilometers|kilometre|kilometres|కిలోమీటర్లు|కి\.మీ|కిమీ|किलोमीटर|किमी)/i);
+    if (distMatch) {
+      updated.transportDistance = `${distMatch[1]} km`;
+      extractedFacts.transportDistance = updated.transportDistance;
+      if (!updated.confirmedFields.includes('distance')) updated.confirmedFields.push('distance');
+    }
+
+    // Target Buyer Extraction (e.g. "wholesaler", "local mandi", "supermarket", "retailer", "fpo")
+    if (textLower.includes('wholesaler') || textLower.includes('wholesale') || textLower.includes('హోల్‌సేలర్') || textLower.includes('హోల్సేల్') || textLower.includes('थोक')) {
+      updated.targetBuyer = 'Wholesaler';
+      extractedFacts.targetBuyer = 'Wholesaler';
+      if (!updated.confirmedFields.includes('buyer')) updated.confirmedFields.push('buyer');
+    } else if (textLower.includes('mandi') || textLower.includes('market yard') || textLower.includes('rythu bazaar') || textLower.includes('మండి') || textLower.includes('రైతు బజార్') || textLower.includes('మండికి')) {
+      updated.targetBuyer = 'Local Mandi';
+      extractedFacts.targetBuyer = 'Local Mandi';
+      if (!updated.confirmedFields.includes('buyer')) updated.confirmedFields.push('buyer');
+    } else if (textLower.includes('retailer') || textLower.includes('shop') || textLower.includes('కిరాణా') || textLower.includes('దుకాణం')) {
+      updated.targetBuyer = 'Retailer';
+      extractedFacts.targetBuyer = 'Retailer';
+      if (!updated.confirmedFields.includes('buyer')) updated.confirmedFields.push('buyer');
+    } else if (textLower.includes('fpo') || textLower.includes('cooperative') || textLower.includes('society') || textLower.includes('సంఘం')) {
+      updated.targetBuyer = 'FPO / Cooperative';
+      extractedFacts.targetBuyer = 'FPO / Cooperative';
+      if (!updated.confirmedFields.includes('buyer')) updated.confirmedFields.push('buyer');
+    } else if (textLower.includes('supermarket') || textLower.includes('hypermarket') || textLower.includes('మాల్')) {
+      updated.targetBuyer = 'Supermarket';
+      extractedFacts.targetBuyer = 'Supermarket';
+      if (!updated.confirmedFields.includes('buyer')) updated.confirmedFields.push('buyer');
+    } else if (textLower.includes('exporter') || textLower.includes('export') || textLower.includes('విదేశాలు')) {
+      updated.targetBuyer = 'Exporter';
+      extractedFacts.targetBuyer = 'Exporter';
+      if (!updated.confirmedFields.includes('buyer')) updated.confirmedFields.push('buyer');
+    }
+
+    // Packaging Preference / Custom Spoken Request
+    if (textLower.includes('plastic crate') || textLower.includes('reusable plastic') || textLower.includes('ప్లాస్టిక్ క్రేట్') || textLower.includes('ప్లాస్టిక్ క్రేట్లు') || textLower.includes('reusable crate') || textLower.includes('crates kavali')) {
+      updated.packagingPreference = 'Food-Grade HDPE Reusable Ventilated Crate';
+      extractedFacts.packagingPreference = updated.packagingPreference;
+      if (!updated.specialRequirements.includes('Reusable Plastic Crate')) {
+        updated.specialRequirements.push('Reusable Plastic Crate');
+      }
+      if (!updated.confirmedFields.includes('packagingPreference')) updated.confirmedFields.push('packagingPreference');
+    } else if (textLower.includes('corrugated') || textLower.includes('gatta') || textLower.includes('cardboard box') || textLower.includes('కార్డ్‌బోర్డ్ డబ్బా')) {
+      updated.packagingPreference = '5-Ply Corrugated Box with Chimney Vents';
+      extractedFacts.packagingPreference = updated.packagingPreference;
+      if (!updated.confirmedFields.includes('packagingPreference')) updated.confirmedFields.push('packagingPreference');
+    }
+
+    // Branding / Traceability / Farm Name
+    if (textLower.includes('farm name') || textLower.includes('brand') || textLower.includes('qr code') || textLower.includes('traceab') || textLower.includes('నా పేరు') || textLower.includes('రైతు పేరు') || textLower.includes('క్యూఆర్')) {
+      updated.brandingRequired = true;
+      updated.traceabilityRequired = true;
+      extractedFacts.brandingRequired = true;
+      if (!updated.confirmedFields.includes('branding')) updated.confirmedFields.push('branding');
+    }
+
+    // Road Condition
+    if (textLower.includes('rough road') || textLower.includes('bumpy') || textLower.includes('pothole') || textLower.includes('గతుకుల') || textLower.includes('ఖరాబు రోడ్డు')) {
+      updated.roadCondition = 'Rough / Unpaved Road (Vibration Risk)';
+      extractedFacts.roadCondition = updated.roadCondition;
+    } else if (textLower.includes('highway') || textLower.includes('smooth')) {
+      updated.roadCondition = 'Smooth Highway Road';
+      extractedFacts.roadCondition = updated.roadCondition;
     }
 
     if (
@@ -844,39 +1014,98 @@ Return STRICT JSON ONLY:
     let selectedQuestionKey = '';
 
     const hasCrop = Boolean(updated.commodity);
-    const hasDuration = Boolean(updated.transportDurationDays || updated.storageDurationDays || updated.unknownFields.includes('duration'));
+    const hasDuration = Boolean(updated.transportDurationDays || updated.storageDurationDays || updated.transportDuration || updated.unknownFields.includes('duration'));
     const hasTemperature = Boolean(updated.refrigeration !== undefined || updated.storageTemperature !== undefined || updated.unknownFields.includes('temperature'));
     const coreComplete = hasCrop && hasDuration && hasTemperature;
+
+    const isLanguageSwitchRequest =
+      textLower.includes('telugu lo') ||
+      textLower.includes('తెలుగులో') ||
+      textLower.includes('english lo') ||
+      textLower.includes('speak in english') ||
+      textLower.includes('talk in english') ||
+      textLower.includes('hindi me') ||
+      textLower.includes('hindi lo') ||
+      textLower.includes('speak in hindi') ||
+      textLower.includes('talk in telugu') ||
+      textLower.includes('speak in telugu');
 
     // SCENARIO 1: Post-Recommendation Consultation Mode (ZERO LOOPING)
     if (updated.recommendationDelivered) {
       isReady = true;
 
-      if (isCorrection || (extractedFacts.transportDurationDays && extractedFacts.transportDurationDays !== context.transportDurationDays)) {
+      // Handle re-evaluations under changed conditions
+      if (textLower.includes('cheaper') || textLower.includes('cheap') || textLower.includes('low cost') || textLower.includes('తక్కువ ఖర్చు') || textLower.includes('తక్కువ ధర')) {
+        updated.budget = 'Economy';
+        updated.budgetPreference = 'Economy';
+      }
+      if (textLower.includes('biodegradable') || textLower.includes('eco') || textLower.includes('bio') || textLower.includes('ప్లాస్టిక్ వద్దు') || textLower.includes('బయో')) {
+        updated.sustainability = 'Prefer biodegradable/compostable';
+        updated.sustainabilityPreference = 'Prefer biodegradable/compostable';
+      }
+      if (textLower.includes('12 hours') || textLower.includes('12 గంటలు') || textLower.includes('12 hrs')) {
+        updated.transportDuration = 12;
+        updated.transportDurationDays = 1;
+      }
+      if (textLower.includes('cold storage unte') || textLower.includes('with cold storage') || textLower.includes('కోల్డ్ స్టోరేజ్ ఉంటే') || textLower.includes('ac unte')) {
+        updated.refrigeration = true;
+        updated.storageTemperature = 4;
+      }
+
+      // Re-run scientific engine for changed follow-up parameters
+      const engineInput: Level1Input = {
+        commodityName: updated.commodity || 'Fresh Tomatoes',
+        storageTempC: updated.storageTemperature ?? (updated.refrigeration ? 4 : 28),
+        relativeHumidity: updated.humidity ?? (updated.refrigeration ? 90 : 75),
+        storageType: updated.refrigeration ? 'Cold Storage (Refrigerated)' : 'Ambient Warehouse',
+        transportDurationDays: updated.transportDurationDays ?? 1,
+        targetShelfLifeDays: (updated.transportDurationDays ?? 1) + 4,
+        packagingFormat: this.inferPackagingFormat(updated),
+        budget: updated.budget || 'Balanced',
+        sustainability: updated.sustainability || 'Prefer biodegradable/compostable',
+        mapRequirement: 'Automatic DSS Selection'
+      };
+      const rec = levelEngines.generateLevel1(engineInput);
+      updated.crop = updated.commodity;
+      updated.refrigerationAvailable = updated.refrigeration;
+      updated.farmerProblemsAnalysis = this.analyzeFarmerProblems(updated.commodity || 'Fresh Produce', updated, rec);
+      updated.threeLevelRecommendation = this.generateThreeLevelRecommendation(updated.commodity || 'Fresh Produce', updated, rec, activeLanguage);
+
+      if (isLanguageSwitchRequest) {
         if (activeLanguage === 'te') {
-          reply = `సవరణ నమోదు చేశాను! ప్రయాణ సమయాన్ని ${updated.transportDurationDays} రోజులకు మార్చి, తాజా ప్యాకేజింగ్ లెక్కించాను.`;
+          reply = `భాష తెలుగులోకి మార్చబడింది. ${updated.threeLevelRecommendation.whyExplanationSpoken}`;
         } else if (activeLanguage === 'hi') {
-          reply = `बदलाव दर्ज कर लिया गया है! यात्रा का समय ${updated.transportDurationDays} दिन मानकर पैकेजिंग दोबारा तैयार कर दी गई है।`;
+          reply = `भाषा हिंदी में बदल दी गई है। ${updated.threeLevelRecommendation.whyExplanationSpoken}`;
         } else {
-          reply = `Understood! Updated your journey timeline to ${updated.transportDurationDays} days and recalculated your packaging requirements.`;
+          reply = `Switched to English. ${updated.threeLevelRecommendation.whyExplanationSpoken}`;
         }
-      } else if (isAskingCardboard) {
+      } else if (isAskingWhy) {
+        reply = updated.threeLevelRecommendation.whyExplanationSpoken;
+      } else if (isCorrection || (extractedFacts.transportDurationDays && extractedFacts.transportDurationDays !== context.transportDurationDays) || textLower.includes('12 hours')) {
         if (activeLanguage === 'te') {
-          reply = `అవును, మీ ${updated.commodity} కోసం వెంటిలేషన్ రంధ్రాలు ఉన్న గట్టి కార్డ్‌బోర్డ్ క్రేట్‌లు చాలా అనుకూలం. అవి గాలిని ఆడనిస్తాయి మరియు రవాణాలో కాయలు నలగకుండా కాపాడతాయి.`;
+          reply = `సవరణ నమోదు చేశాను! ప్రయాణ సమయాన్ని 12 గంటలకు నవీకరించి, తాజా ప్యాకేజింగ్ లెక్కించాను. ${updated.threeLevelRecommendation.whyExplanationSpoken}`;
         } else if (activeLanguage === 'hi') {
-          reply = `हाँ, आपकी ${updated.commodity} के लिए वेंटिलेशन छेद वाले 5-प्लाई कोरूगेटेड डिब्बे बहुत उपयुक्त हैं। इससे हवा का संचार बना रहता है और फसल दबने से बचती है।`;
+          reply = `बदलाव दर्ज कर लिया गया है! 12 घंटे की यात्रा के अनुसार सिफारिश फिर से तैयार की गई है। ${updated.threeLevelRecommendation.whyExplanationSpoken}`;
         } else {
-          reply = `Yes, heavy-duty 5-ply corrugated cardboard boxes with side ventilation slots are very effective for ${updated.commodity}. They cushion the produce and allow chimney ventilation during transport.`;
+          reply = `Understood! Updated transit timeline and recalculated packaging: ${updated.threeLevelRecommendation.whyExplanationSpoken}`;
         }
-      } else if (isAskingPerforations || isAskingWhy) {
+      } else if (isAskingCardboard || textLower.includes('reusable plastic') || textLower.includes('plastic crate')) {
+        if (activeLanguage === 'te') {
+          reply = `అవును, మీ ${updated.commodity} కోసం వెంటిలేషన్ రంధ్రాలు ఉన్న గట్టి కార్డ్‌బోర్డ్ క్రేట్‌లు లేదా ఫుడ్-గ్రేడ్ ప్లాస్టిక్ క్రేట్‌లు చాలా అనుకూలం. అవి గాలిని ఆడనిస్తాయి మరియు రవాణాలో కాయలు నలగకుండా కాపాడతాయి.`;
+        } else if (activeLanguage === 'hi') {
+          reply = `हाँ, आपकी ${updated.commodity} के लिए वेंटिलेशन छेद वाले 5-प्लाई कोरूगेटेड डिब्बे या प्लास्टिक क्रेट बहुत उपयुक्त हैं। इससे हवा का संचार बना रहता है और फसल दबने से बचती है।`;
+        } else {
+          reply = `Yes, heavy-duty 5-ply corrugated cardboard boxes or food-grade HDPE reusable crates with side ventilation slots are very effective for ${updated.commodity}. They cushion the produce and allow chimney ventilation during transport.`;
+        }
+      } else if (isAskingPerforations) {
         if (activeLanguage === 'te') {
           reply = `తాజా కూరగాయలు ప్యాక్ చేసిన తర్వాత కూడా శ్వాసక్రియ జరుపుతాయి. సరైన మైక్రో-వెంటిలేషన్ రంధ్రాలు లేకపోతే లోపల తేమ నిలిచిపోయి బూజు పడుతుంది.`;
         } else if (activeLanguage === 'hi') {
-          reply = `ताज़ा फसल पैक होने के बाद भी सांस लेती है। अगर पैकेट में वेंटिलेशन नहीं होगा तो अंदर पसीना और फंगస్ लग जाएगी।`;
+          reply = `ताज़ा फसल पैक होने के बाद भी सांस लेती है। अगर पैकेट में वेंटिलेशन नहीं होगा तो अंदर पसीना और फंगस लग जाएगी।`;
         } else {
           reply = `Fresh produce continuously respires and releases moisture vapor. Calibrated micro-perforations maintain oxygen equilibrium while allowing excess humidity to escape, preventing rot.`;
         }
-      } else if (isAskingCost || extractedFacts.budget) {
+      } else if (isAskingCost || extractedFacts.budget === 'Economy') {
         if (activeLanguage === 'te') {
           reply = `మీ బడ్జెట్ ప్రకారం అతి తక్కువ ఖర్చుతో కూడిన పొదుపైన ప్యాకేజింగ్ ఎంపికను ఎంపిక చేశాను. ఇది బాక్సుకు దాదాపు ₹15 నుండి ₹22 వరకు ఖర్చవుతుంది.`;
         } else if (activeLanguage === 'hi') {
@@ -885,19 +1114,30 @@ Return STRICT JSON ONLY:
           reply = `Understood! Selected an economical, low-cost configuration for your harvest. Estimated cost is around ₹15 to ₹25 per container.`;
         }
       } else {
-        if (activeLanguage === 'te') {
-          reply = `మీ ${updated.commodity} ప్యాకేజింగ్ ప్రణాళిక సిద్ధంగా ఉంది. రవాణాలో క్రేట్‌లను ఎండ తగలకుండా నీడలో ఉంచండి, మరియు గాలి తగిలేలా పేర్చండి.`;
-        } else if (activeLanguage === 'hi') {
-          reply = `आपकी ${updated.commodity} की सिफारिश सक्रिय रूप से तैयार है। यात्रा के दौरान डिब्बों को सीधी धूप से बचाएं और हवा आने दें।`;
-        } else {
-          reply = `Your packaging plan for ${updated.commodity} is actively calculated and ready on your screen. Keep crates ventilated and shielded from direct sunlight during transit.`;
-        }
+        reply = updated.threeLevelRecommendation.whyExplanationSpoken;
       }
+
       selectedQuestionKey = 'consultation_followup';
+      updated.currentQuestionOptions = [
+        'Why this packaging?',
+        'Cheaper option unda?',
+        'Biodegradable option unda?',
+        'What if transit takes 12 hours?',
+        'Cold storage unte?'
+      ];
     }
     // SCENARIO 2: Crop / Produce is Missing
     else if (!hasCrop) {
       selectedQuestionKey = 'ask_crop';
+      updated.currentQuestionOptions = [
+        'Fresh Tomatoes',
+        'Ripening Mangoes',
+        'Potatoes / Onions',
+        'Fresh Strawberries',
+        'Button Mushrooms',
+        'Leafy Greens',
+        'Other'
+      ];
       if (activeLanguage === 'te') {
         reply = "నమస్కారం! మీరు ఏ తాజా పంటను ప్యాక్ చేయాలనుకుంటున్నారు? ఉదాహరణకు టమాటాలు, మామిడి, స్ట్రాబెర్రీలు లేదా ఆకుకూరలు?";
       } else if (activeLanguage === 'hi') {
@@ -923,11 +1163,13 @@ Return STRICT JSON ONLY:
 
       if (!hasDuration) {
         selectedQuestionKey = 'ask_duration';
+        updated.currentQuestionOptions = ['Within 6 Hours', '1 Day (Tomorrow)', '2-3 Days', '4+ Days', 'Other'];
         reply = activeLanguage === 'te'
           ? `${explanation} మార్కెట్‌కు చేరడానికి ఎంత సమయం లేదా ఎన్ని రోజులు పడుతుంది?`
           : `${explanation} How long will the journey take until it reaches the market or buyer?`;
       } else if (!hasTemperature) {
         selectedQuestionKey = 'ask_temperature';
+        updated.currentQuestionOptions = ['Room Temp / Outside', 'Cold Storage (Refrigerated)', 'Hot Summer (>30°C)', 'Other'];
         reply = activeLanguage === 'te'
           ? `${explanation} రవాణాలో ఏసీ ఉందా లేదా సాధారణ వాహనమా?`
           : `${explanation} Will the vehicle be refrigerated, or carried in normal ambient weather?`;
@@ -938,6 +1180,7 @@ Return STRICT JSON ONLY:
     // SCENARIO 4: Crop Known, Missing Transit/Storage Duration
     else if (!hasDuration) {
       selectedQuestionKey = 'ask_duration';
+      updated.currentQuestionOptions = ['Within 6 Hours', '1 Day (Tomorrow)', '2-3 Days', '4+ Days', 'Other'];
       const cropName = updated.commodity;
       const ackCrop = updated.variety ? `${updated.variety} ${cropName}` : cropName;
       const ackDest = updated.destination ? ` to ${updated.destination}` : '';
@@ -957,7 +1200,7 @@ Return STRICT JSON ONLY:
     // SCENARIO 5: Crop & Duration Known, Missing Temperature / Cold Chain
     else if (!hasTemperature) {
       selectedQuestionKey = 'ask_temperature';
-      const daysText = updated.transportDurationDays ? `${updated.transportDurationDays} days` : 'your transit';
+      updated.currentQuestionOptions = ['Normal Room Temp (No AC)', 'Cold Storage (Refrigerated 4°C)', 'Hot Weather (>30°C)', 'Other'];
 
       if (activeLanguage === 'te') {
         reply = `అర్థమైంది. రవాణా వాహనంలో ఏసీ లేదా కోల్డ్ స్టోరేజ్ ఉందా, లేదా సాధారణ వేడి వాతావరణంలో తీసుకెళ్తారా?`;
@@ -971,15 +1214,28 @@ Return STRICT JSON ONLY:
         reply = `Understood. Will the transport vehicle be refrigerated with cold storage, or will it be carried in normal ambient weather?`;
       }
     }
-    // SCENARIO 6: Core Facts Complete -> Offer Budget/Sustainability (if early) OR Run Recommendation
+    // SCENARIO 6: Missing Target Buyer (if not specified yet)
+    else if (!updated.targetBuyer && !updated.confirmedFields.includes('buyer') && !updated.askedQuestionKeys.includes('ask_buyer') && (updated.turnCount || 0) < 4 && !wantsCalculationNow) {
+      selectedQuestionKey = 'ask_buyer';
+      updated.currentQuestionOptions = ['Local Mandi', 'Wholesaler', 'Retailer', 'FPO / Co-op', 'Supermarket', 'Exporter', 'Other'];
+      if (activeLanguage === 'te') {
+        reply = `పంటను ఎవరికి పంపుతున్నారు? స్థానిక మండీకా, హోల్‌సేలర్‌కా, లేదా ఎగుమతికా?`;
+      } else if (activeLanguage === 'hi') {
+        reply = `फसल किसके पास भेजी जा रही है? स्थानीय मंडी, थोक व्यापारी, या सुपरमार्केट?`;
+      } else {
+        reply = `Who are you sending it to? For example, local mandi, wholesaler, retailer, FPO, or exporter?`;
+      }
+    }
+    // SCENARIO 7: Core Facts Complete -> Offer Budget/Sustainability (if early) OR Run Recommendation
     else if (
       !updated.confirmedFields.includes('budget') &&
       !updated.confirmedFields.includes('sustainability') &&
       !updated.askedQuestionKeys.includes('ask_preference') &&
-      (updated.turnCount || 0) < 4 &&
+      (updated.turnCount || 0) < 5 &&
       !wantsCalculationNow
     ) {
       selectedQuestionKey = 'ask_preference';
+      updated.currentQuestionOptions = ['Economical / Low Cost', 'Balanced Standard', 'Eco-Friendly / Biodegradable', 'Reusable Plastic Crate', 'Other'];
       if (activeLanguage === 'te') {
         reply = `ప్రధాన వివరాలు లభించాయి. మీరు తక్కువ ఖర్చుతో కూడిన ప్యాకేజింగ్ కోరుకుంటున్నారా, లేదా పర్యావరణ అనుకూల బయో-మెటీరియల్ కావాలా?`;
       } else if (activeLanguage === 'hi') {
@@ -988,23 +1244,18 @@ Return STRICT JSON ONLY:
         reply = `I have the core transit conditions. Do you prefer economical low-cost packaging, or eco-friendly biodegradable materials?`;
       }
     }
-    // SCENARIO 7: Sufficient Information -> EXECUTE LEVEL 1 RECOMMENDATION!
+    // SCENARIO 8: Sufficient Information -> EXECUTE LEVEL 1 RECOMMENDATION!
     else {
       isReady = true;
       updated.recommendationDelivered = true;
       selectedQuestionKey = 'delivered_recommendation';
-
-      if (activeLanguage === 'te') {
-        reply = `ధన్యవాదాలు! మీ ${updated.commodity} కోసం శాస్త్రీయ ప్యాకేజింగ్ మరియు అవసరమైన మైక్రో-వెంటిలేషన్ రంధ్రాలు లెక్కించాను. వివరాలు మీ స్క్రీన్ పై చూడండి!`;
-      } else if (activeLanguage === 'hi') {
-        reply = `धन्यवाद! आपकी ${updated.commodity} के लिए अनुकूलित पैकेजिंग और वेंटिलेशन तैयार कर दिया गया है। रिपोर्ट स्क्रीन पर उपलब्ध है।`;
-      } else if (activeLanguage === 'ta') {
-        reply = `நன்றி! உங்கள் ${updated.commodity}க்கான சரியான காற்றோட்ட பேக்கேஜிங் பரிந்துரை தயாராக உள்ளது.`;
-      } else if (activeLanguage === 'kn') {
-        reply = `ಧನ್ಯವಾದಗಳು! ನಿಮ್ಮ ${updated.commodity}ಗೆ ಸೂಕ್ತ ಪ್ಯಾಕೇಜಿಂಗ್ ಸಿದ್ಧವಾಗಿದೆ.`;
-      } else {
-        reply = `Thank you! I have all necessary harvest details for your ${updated.commodity}. I have calculated the optimal packaging structure and ventilation on your screen.`;
-      }
+      updated.currentQuestionOptions = [
+        'Why this packaging?',
+        'Cheaper option unda?',
+        'Biodegradable option unda?',
+        'What if transit takes 12 hours?',
+        'Cold storage unte?'
+      ];
     }
 
     if (selectedQuestionKey && !updated.askedQuestionKeys.includes(selectedQuestionKey)) {
@@ -1014,6 +1265,7 @@ Return STRICT JSON ONLY:
       updated.askedQuestions.push(reply);
     }
     updated.lastQuestion = reply;
+    updated.lastQuestionKey = selectedQuestionKey;
 
     let recommendationResult: Level1RecommendationResult | undefined;
     let detailedReport: FarmerDetailedReport | undefined;
@@ -1025,8 +1277,8 @@ Return STRICT JSON ONLY:
         storageTempC: updated.storageTemperature ?? (updated.refrigeration ? 4 : 28),
         relativeHumidity: updated.humidity ?? (updated.refrigeration ? 90 : 75),
         storageType: updated.refrigeration ? 'Cold Storage (Refrigerated)' : 'Ambient Warehouse',
-        transportDurationDays: updated.transportDurationDays ?? 2,
-        targetShelfLifeDays: (updated.transportDurationDays ?? 2) + 4,
+        transportDurationDays: updated.transportDurationDays ?? 1,
+        targetShelfLifeDays: (updated.transportDurationDays ?? 1) + 4,
         packagingFormat: this.inferPackagingFormat(updated),
         budget: updated.budget || 'Balanced',
         sustainability: updated.sustainability || 'Prefer biodegradable/compostable',
@@ -1035,6 +1287,15 @@ Return STRICT JSON ONLY:
 
       recommendationResult = levelEngines.generateLevel1(engineInput);
       detailedReport = this.generateDetailedFarmerReport(updated, history, speech, recommendationResult, reply);
+      updated.crop = updated.commodity;
+      updated.refrigerationAvailable = updated.refrigeration;
+      updated.farmerProblemsAnalysis = this.analyzeFarmerProblems(updated.commodity, updated, recommendationResult);
+      updated.threeLevelRecommendation = this.generateThreeLevelRecommendation(updated.commodity, updated, recommendationResult, activeLanguage);
+
+      if (selectedQuestionKey === 'delivered_recommendation') {
+        reply = updated.threeLevelRecommendation.whyExplanationSpoken;
+        updated.lastQuestion = reply;
+      }
     }
 
     // DEVELOPER LOGGING (PART 23)
@@ -1233,6 +1494,195 @@ Return STRICT JSON ONLY:
         'Trial transit test over a representative 48-hour delivery route to evaluate box stacking compression.'
       ],
       spokenVoiceSummary: spokenSummary
+    };
+  }
+
+  /**
+   * Generates the 3-Level Packaging Recommendation:
+   * Level A: Material (from DB result)
+   * Level B: Package Type / Structure
+   * Level C: Packing Method / Configuration
+   */
+  public generateThreeLevelRecommendation(
+    crop: string,
+    ctx: FarmerConversationContext,
+    rec: Level1RecommendationResult,
+    lang: string = 'en'
+  ) {
+    const cropLower = (crop || '').toLowerCase();
+    const isTomato = cropLower.includes('tomato');
+    const isMango = cropLower.includes('mango');
+    const isStrawberry = cropLower.includes('strawberr') || cropLower.includes('berry');
+    const isMushroom = cropLower.includes('mushroom');
+    const isLeafy = cropLower.includes('spinach') || cropLower.includes('leaf') || cropLower.includes('greens') || cropLower.includes('lettuce');
+    const isRoot = cropLower.includes('potato') || cropLower.includes('onion');
+    const isColdChain = Boolean(ctx.refrigeration);
+
+    // 1. Level A: Material
+    const materialName = rec.recommendedPackaging.name;
+    const materialCategory = rec.recommendedPackaging.category;
+    const materialSpec = `Thickness: ${rec.recommendedThicknessMicrons}µm • OTR: ${rec.recommendedPackaging.otr.value} cc/m²·day·atm • WVTR: ${rec.recommendedPackaging.wvtr.value} g/m²·day`;
+
+    // 2. Level B: Package Type / Structure
+    let packageStructure = 'Ventilated Produce Crate';
+    let structureDesc = '';
+    let ventilationType = 'Calibrated Ventilation Slots';
+
+    if (isRoot) {
+      packageStructure = 'Breathable Leno Mesh Sack / Macro-Vented Bulk Crate';
+      structureDesc = 'Heavy-duty breathable woven polyolefin mesh sack with open diamond weave to allow maximum cross-draft airflow and prevent humidity accumulation.';
+      ventilationType = 'Continuous macro-mesh open airflow (>25,000 cc/m²·day)';
+    } else if (isStrawberry || isMushroom) {
+      packageStructure = 'Molded Sugarcane Bagasse Punnet with Micro-Perforated Anti-Fog Lidding';
+      structureDesc = 'Shallow-well shock-absorbing bio-fiber clamshell punnet with anti-fog laser micro-perforated film (8-12 holes of 60µm).';
+      ventilationType = 'Laser micro-perforations (60µm) tuned to high respiration flux';
+    } else if (isTomato) {
+      if (ctx.packagingPreference?.toLowerCase().includes('plastic') || ctx.packagingPreference?.toLowerCase().includes('crate')) {
+        packageStructure = 'Food-Grade HDPE Reusable Ventilated Crate (Stackable & Nestable)';
+        structureDesc = 'Rigid high-density polyethylene crate with slotted side and bottom ventilation ribs, reinforced stacking corners, and smooth rounded interior walls to eliminate puncture bruising.';
+        ventilationType = 'Side-wall slotted chimney vents (28% open surface area)';
+      } else {
+        packageStructure = '5-Ply Corrugated Kraft Produce Box with Chimney Vent Alignment';
+        structureDesc = 'Heavy-duty 5-ply Kraft corrugated box (ECT 44) with die-cut vertical ventilation slots aligned with pallet stacking columns.';
+        ventilationType = 'Die-cut chimney air slots (6 slots per box, 12mm x 45mm)';
+      }
+    } else if (isMango) {
+      packageStructure = 'Corrugated Master Carton with Individual Molded Dividers';
+      structureDesc = 'Ventilated telescopic corrugated carton with food-grade paper pulp honeycomb trays or expandable EPE foam net sleeves for each fruit.';
+      ventilationType = 'Side hand-holes with top venting for convective heat escape';
+    } else {
+      packageStructure = 'Ventilated Corrugated Bulk Container with Moisture-Resistant Kraft Liner';
+      structureDesc = 'Tough dual-wall corrugated container with internal ventilation chimneys and aqueous grease/moisture barrier coating.';
+      ventilationType = 'Macro-slotted perimeter ventilation';
+    }
+
+    // 3. Level C: Packing Method / Configuration
+    let quantityPerPackage = '20 kg to 25 kg per container';
+    let layerArrangement = 'Maximum 3 layers arranged in calyx-down staggered formation';
+    let cushioning = 'Corrugated bottom liner pad with soft newsprint/pulp divider sheets between layers';
+    let chimneyVent = 'Stack crates in vertical columns; align all side slots to maintain unobstructed airflow chimney throughout transport';
+    let stackingLimits = 'Maximum 6 crates high in transport truck; strap securely with corner edge protectors';
+    let handlingInstructions = 'Avoid throwing or dropping; hold by side hand-grips; park vehicle in shade during transit stops';
+
+    if (isStrawberry || isMushroom) {
+      quantityPerPackage = '250g to 500g per individual punnet (12 punnets per master flat)';
+      layerArrangement = 'Single layer only; never double-stack unripened soft berries';
+      cushioning = 'Shock-absorbing bubble/pulp pad at base of each punnet';
+      chimneyVent = 'Maintain 20mm air gap between master trays for forced-air cooling';
+      stackingLimits = 'Maximum 8 master flats high on pallet';
+      handlingInstructions = 'Keep chilled at 0°C - 2°C; handle gently with two hands';
+    } else if (isTomato) {
+      quantityPerPackage = ctx.quantity ? `Packed in units of 20-25 kg (Total: ${ctx.quantity})` : '20 kg to 25 kg per crate/box';
+      layerArrangement = 'Max 3 to 4 layers arranged stem-down; place firmer tomatoes at bottom, ripest at top';
+      cushioning = 'Cushioned corrugated paperboard pad at base; optional foam divider between layer 2 and 3';
+      chimneyVent = 'Align all side ventilation louvers in same direction along truck length to let wind circulate during driving';
+      stackingLimits = 'Stack up to 5-6 crates high; never place heavy crates on top of bulging containers';
+      handlingInstructions = 'Handle crates using side hand-grips; avoid tying ropes directly over unlidded open produce';
+    } else if (isMango) {
+      quantityPerPackage = '5 kg to 10 kg per carton (single or double layer)';
+      layerArrangement = 'Fruit placed in single layer resting on cheek, stalk facing inward; expandable foam sleeve on each mango';
+      cushioning = 'Soft pulp honeycomb tray with individual fruit cavities';
+      chimneyVent = 'Perimeter holes aligned with carton handles for heat dissipation';
+      stackingLimits = 'Max 7 cartons high on pallets';
+      handlingInstructions = 'Maintain 12°C - 14°C; never store below 10°C to avoid chilling injury';
+    }
+
+    const durationText = ctx.transportDurationDays ? `${ctx.transportDurationDays} days` : `${ctx.transportDuration || 'several'} hours`;
+    const durationTe = ctx.transportDurationDays ? `${ctx.transportDurationDays} రోజులు` : `${ctx.transportDuration || 'కొన్ని'} గంటలు`;
+    const durationHi = ctx.transportDurationDays ? `${ctx.transportDurationDays} दिन` : `${ctx.transportDuration || 'कुछ'} घंटे`;
+
+    // Dynamic "Why this packaging?" strictly grounded in actual engine output
+    const whyEn = `I recommend this ${packageStructure} made of ${materialName} because your ${crop} is freshly harvested, the journey is ${durationText}, and you have ${isColdChain ? 'cold storage' : 'no cold storage (ambient weather)'}. The ${ventilationType} allows respiration heat and moisture to escape so condensation rot cannot form, while the package structure helps reduce crushing during transport.`;
+
+    const whyTe = `మీ ${this.getLocalizedProduceName(crop, 'te')} తాజాగా ఉన్నాయి, ప్రయాణ సమయం ${durationTe} మరియు ${isColdChain ? 'కోల్డ్ స్టోరేజ్ ఉంది' : 'కోల్డ్ స్టోరేజ్ లేదు'}. అందుకే గాలి ప్రసరణ ఉండే ${packageStructure}ను సిస్టమ్ సిఫారసు చేసింది. ఇది వేడి మరియు తేమ నియంత్రణకు సహాయపడుతుంది మరియు రవాణాలో దెబ్బతినే ప్రమాదాన్ని తగ్గించడంలో సహాయపడుతుంది.`;
+
+    const whyHi = `आपकी ${this.getLocalizedProduceName(crop, 'hi')} ताज़ा है, यात्रा का समय ${durationHi} है और ${isColdChain ? 'कोल्ड स्टोरेज उपलब्ध है' : 'कोल्ड स्टोरेज नहीं है'}। इसलिए ${materialName} का ${packageStructure} अनुशंसित है। इसका वेंटिलेशन गर्मी और पसीना बाहर निकालता है और मजबूत ढांचा फसल को दबने और सड़ने से बचाता है।`;
+
+    const spokenWhy = lang === 'te' ? whyTe : lang === 'hi' ? whyHi : whyEn;
+
+    return {
+      material: {
+        name: materialName,
+        category: materialCategory,
+        specification: materialSpec
+      },
+      packageType: {
+        structure: packageStructure,
+        description: structureDesc,
+        ventilationType
+      },
+      packingMethod: {
+        quantityPerPackage,
+        layerArrangement,
+        cushioningAndSeparation: cushioning,
+        ventilationChimney: chimneyVent,
+        stackingLimits,
+        handlingInstructions
+      },
+      whyExplanation: whyEn,
+      whyExplanationSpoken: spokenWhy,
+      transportInstructions: isColdChain ? 'Maintain constant 2°C - 4°C reefer setting; do not block floor air chutes.' : 'Ensure open cross-ventilation in truck; park in shade during transit halts.',
+      storageInstructions: isColdChain ? 'Transfer immediately to cold room upon arrival.' : 'Store in well-ventilated covered warehouse away from damp ground.',
+      potentialBenefits: [
+        'Reduces physical crushing and transit bruising losses by up to 60-80%',
+        'Eliminates moisture droplet condensation that triggers fungal mold rot',
+        'Preserves harvest firmness and skin bloom for higher mandi wholesale price',
+        'Facilitates chimney airflow throughout cargo stack during road transport'
+      ],
+      alternatives: rec.alternatives
+    };
+  }
+
+  /**
+   * Scientific Risk Assessment for the Eight Farmer Problems
+   */
+  public analyzeFarmerProblems(
+    crop: string,
+    ctx: FarmerConversationContext,
+    rec: Level1RecommendationResult
+  ) {
+    const isHighResp = rec.commodity.respirationRateClass.includes('High');
+    const isLong = (ctx.transportDurationDays || 1) >= 2 || (typeof ctx.transportDuration === 'number' && ctx.transportDuration > 8);
+    const isHot = (ctx.storageTemperature || 28) >= 28 && !ctx.refrigeration;
+    const isRough = Boolean(ctx.roadCondition && /rough|bumpy|muddy|unpaved|pothole/i.test(ctx.roadCondition));
+
+    return {
+      postHarvestLossRisk: {
+        level: (isHighResp && isHot ? 'HIGH' : isLong ? 'MEDIUM' : 'LOW') as 'LOW' | 'MEDIUM' | 'HIGH',
+        description: isHighResp && isHot
+          ? `High respiration produce in hot ambient conditions (${ctx.storageTemperature || 30}°C) experiences rapid metabolic breakdown without chimney airflow.`
+          : 'Baseline metabolic aging; controlled with recommended container ventilation.'
+      },
+      bruisingCrushingRisk: {
+        level: (isRough || isLong ? 'HIGH' : 'MEDIUM') as 'LOW' | 'MEDIUM' | 'HIGH',
+        description: isRough
+          ? 'Unpaved/rough road transport creates vertical vibration shock. Rigid crate walls and multi-layer cushioning prevent bottom-layer crushing.'
+          : 'Stacking load during transit requires rigid container walls with load-bearing corner columns.'
+      },
+      moistureSpoilageRisk: {
+        level: (isHighResp || isHot ? 'HIGH' : 'MEDIUM') as 'LOW' | 'MEDIUM' | 'HIGH',
+        description: `Transpiration VPD is ${rec.commodity.transpirationVPDkPa} kPa. Calibrated micro-vents prevent moisture droplet condensation that causes mold rot.`
+      },
+      marketPriceImpact: {
+        level: 'HIGH' as 'LOW' | 'MEDIUM' | 'HIGH',
+        description: 'Bruised or condensation-rotted produce is downgraded at the mandi, reducing wholesale realization by 20% to 35%.'
+      },
+      weatherExposureRisk: {
+        level: (isHot ? 'HIGH' : 'MEDIUM') as 'LOW' | 'MEDIUM' | 'HIGH',
+        description: isHot ? 'Direct solar radiation in open tempo accelerates pulp temperature. Shaded tarping with side air scoops is essential.' : 'Ambient conditions manageable with covered transit.'
+      },
+      contaminationRisk: {
+        level: 'MEDIUM' as 'LOW' | 'MEDIUM' | 'HIGH',
+        description: 'Direct contact with dirty vehicle floors or mud is eliminated by raised-bottom nesting feet on the recommended crate.'
+      },
+      traceabilityBrandingPotential: {
+        level: (ctx.brandingRequired ? 'HIGH' : 'MEDIUM') as 'LOW' | 'MEDIUM' | 'HIGH',
+        description: 'Adding farm name and QR batch code allows buyer to verify freshness, enabling direct sale to premium buyers or FPO cooperatives.'
+      },
+      storageDelayedSaleCapacity: {
+        level: (isLong ? 'HIGH' : 'MEDIUM') as 'LOW' | 'MEDIUM' | 'HIGH',
+        description: `Engineered packaging maintains marketable freshness for ${rec.estimatedShelfLifeDays.min} to ${rec.estimatedShelfLifeDays.max} days if market sale is delayed.`
+      }
     };
   }
 }

@@ -1,13 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { ShieldCheck, Users, Activity, FileText, Cpu, Database, AlertTriangle } from 'lucide-react';
+import { ShieldCheck, Users, Activity, FileText, Cpu, Database, AlertTriangle, Package, Upload } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { apiFetch } from '../../utils/api';
+import { PackagingImageLibraryModal } from './PackagingImageLibraryModal';
 
 export const AdminDashboard: React.FC = () => {
   const { user } = useAuth();
   const [stats, setStats] = useState<any | null>(null);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showImageLibrary, setShowImageLibrary] = useState(false);
 
   useEffect(() => {
     const fetchAdminData = async () => {
@@ -36,17 +38,28 @@ export const AdminDashboard: React.FC = () => {
     <div className="space-y-8 max-w-5xl mx-auto text-slate-200">
       
       {/* Header */}
-      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-xl">
-        <div className="flex items-center gap-2 text-rose-400 text-xs font-mono font-semibold uppercase mb-1">
-          <ShieldCheck className="w-4 h-4" />
-          <span>Section 27 & 28: System Administration & Audit Control</span>
+      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-xl flex flex-col sm:flex-row sm:items-center justify-between gap-6">
+        <div>
+          <div className="flex items-center gap-2 text-rose-400 text-xs font-mono font-semibold uppercase mb-1">
+            <ShieldCheck className="w-4 h-4" />
+            <span>Section 27 & 28: System Administration & Audit Control</span>
+          </div>
+          <h1 className="text-2xl sm:text-3xl font-black text-white">
+            Platform Governance & Security Audit Trail
+          </h1>
+          <p className="text-xs text-slate-400 mt-2 max-w-2xl">
+            Administrator console for inspecting system telemetry, managing RBAC role assignments, monitoring AI model pipelines, and reviewing immutable audit logs.
+          </p>
         </div>
-        <h1 className="text-2xl sm:text-3xl font-black text-white">
-          Platform Governance & Security Audit Trail
-        </h1>
-        <p className="text-xs text-slate-400 mt-2">
-          Administrator console for inspecting system telemetry, managing RBAC role assignments, monitoring AI model pipelines, and reviewing immutable audit logs.
-        </p>
+
+        <button
+          type="button"
+          onClick={() => setShowImageLibrary(true)}
+          className="px-5 py-3 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-2.5 transition shadow-lg shadow-indigo-950/50 shrink-0 cursor-pointer"
+        >
+          <Package className="w-4 h-4" />
+          <span>Manage Packaging Image Library</span>
+        </button>
       </div>
 
       {/* Telemetry Grid */}
@@ -167,6 +180,15 @@ export const AdminDashboard: React.FC = () => {
           </table>
         </div>
       </div>
+
+      {/* Packaging Image Library Management Modal */}
+      <PackagingImageLibraryModal
+        isOpen={showImageLibrary}
+        onClose={() => setShowImageLibrary(false)}
+        onAssetUpdated={() => {
+          // reload telemetry stats if needed
+        }}
+      />
 
     </div>
   );

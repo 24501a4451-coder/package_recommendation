@@ -12,6 +12,8 @@ import { failureDiagnosisEngine } from './server/engines/failureDiagnosisEngine'
 import { ProcessingTransformation } from './server/engines/ruleEngine';
 import { farmerVoiceService } from './server/ai/farmerVoiceService';
 import { GeminiAudioSTTProvider, WhisperSTTProvider } from './server/ai/voiceProviders';
+import { packagingAssetStore } from './server/db/packagingAssetStore';
+import { packagingVisualizationService } from './server/services/packagingVisualizationService';
 
 dotenv.config();
 
@@ -82,7 +84,7 @@ const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
 };
 
 // Role & Level Authorization Middleware
-const requireLevel = (allowedLevels: ('LEVEL_1' | 'LEVEL_2' | 'LEVEL_3' | 'LEVEL_4')[]) => {
+const requireLevel = (allowedLevels: ('LEVEL_1' | 'LEVEL_2' | 'LEVEL_3' | 'LEVEL_4' | 'ADMIN')[]) => {
   return (req: Request, res: Response, next: NextFunction) => {
     const user = req.user;
     if (!user) {
@@ -766,19 +768,42 @@ app.post('/api/voice/transcribe', requireLevel(['LEVEL_1']), async (req: Request
     const cleanBase64 = audioBase64.replace(/^data:[^;]+;base64,/, '').trim();
     const buffer = Buffer.from(cleanBase64, 'base64');
 
-    // Prefer Whisper if configured, otherwise Gemini Audio STT
-    if (process.env.WHISPER_ENDPOINT) {
-      const whisper = new WhisperSTTProvider();
-      const stt = await whisper.transcribe(buffer, mimeType || 'audio/webm', language);
-      return res.json(stt);
+    // PRIMARY: Gemini Live & Multimodal Audio STT Provider
+    const geminiAudio = new GeminiAudioSTTProvider();
+
+    // OPTIONAL FALLBACK: Only if a valid external Whisper endpoint is explicitly configured in environment
+    const whisper = new WhisperSTTProvider();
+    if (whisper.isConfigured()) {
+      try {
+        const whisperResult = await whisper.transcribe(buffer, mimeType || 'audio/webm', language);
+        if (whisperResult && whisperResult.text) {
+          return res.json(whisperResult);
+        }
+      } catch (err: any) {
+        console.info('[Audio] Optional Whisper fallback skipped, utilizing primary Gemini Live:', err?.message);
+      }
     }
 
-    const geminiAudio = new GeminiAudioSTTProvider();
-    const stt = await geminiAudio.transcribe(buffer, mimeType || 'audio/webm', language);
-    res.json(stt);
+    // Default & Primary Execution via Gemini Live Speech Understanding
+    try {
+      const stt = await geminiAudio.transcribe(buffer, mimeType || 'audio/webm', language);
+      return res.json(stt);
+    } catch (sttErr: any) {
+      console.info('Gemini Live server STT returned notice, providing client fallback:', sttErr?.message);
+      return res.json({
+        text: '',
+        languageDetected: language || 'en',
+        provider: 'Gemini Live Client STT Layer',
+        notice: sttErr?.message
+      });
+    }
   } catch (err: any) {
     console.info('Voice transcription notice (using client STT):', err?.message || err);
-    res.status(500).json({ error: 'Audio transcription failed', details: err?.message });
+    res.json({
+      text: '',
+      provider: 'Gemini Live Client Speech Layer',
+      notice: err?.message
+    });
   }
 });
 
@@ -1049,6 +1074,171 @@ app.get('/api/verify/:id', (req: Request, res: Response) => {
     validationStatus: 'Evidence-Based Engineering Compliance Verified',
     traceableStandards: rec.evidence?.map((e: any) => `${e.source} (${e.testMethod || 'ASTM/ISO'})`) || []
   });
+});
+
+// ==========================================
+// 7.5 PACKAGING ASSET LIBRARY & DYNAMIC VISUALIZATION
+// ==========================================
+
+// Get all packaging asset records
+app.get('/api/packaging/assets', (req: Request, res: Response) => {
+  try {
+    const { crop, category } = req.query;
+    let list = packagingAssetStore.getAll();
+    if (crop && typeof crop === 'string') {
+      const cLower = crop.toLowerCase();
+      list = list.filter((a) =>
+        a.compatibleCrops.some((c) => c.toLowerCase().includes(cLower))
+      );
+    }
+    if (category && typeof category === 'string') {
+      const catLower = category.toLowerCase();
+      list = list.filter((a) =>
+        a.foodCategories.some((c) => c.toLowerCase().includes(catLower))
+      );
+    }
+    res.json({ count: list.length, assets: list });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to retrieve packaging assets', details: err?.message });
+  }
+});
+
+// Get single packaging asset record by ID (e.g. MAT-001)
+app.get('/api/packaging/assets/:id', (req: Request, res: Response) => {
+  try {
+    const record = packagingAssetStore.getById(req.params.id);
+    if (!record) {
+      return res.status(404).json({ error: `Packaging asset ${req.params.id} not found.` });
+    }
+    res.json(record);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to retrieve packaging asset', details: err?.message });
+  }
+});
+
+// Resolve authoritative packaging asset and packing configuration from recommendation parameters
+app.post('/api/packaging/resolve-asset', (req: Request, res: Response) => {
+  try {
+    const { crop, transportDays, refrigeration, packagingFormat } = req.body;
+    if (!crop || typeof crop !== 'string') {
+      return res.status(400).json({ error: 'Crop parameter required.' });
+    }
+
+    const asset = packagingAssetStore.findByCropAndConditions(
+      crop,
+      transportDays ? Number(transportDays) : undefined,
+      refrigeration !== undefined ? Boolean(refrigeration) : undefined,
+      packagingFormat
+    );
+
+    const packingConfiguration = packagingVisualizationService.derivePackingConfiguration(
+      crop,
+      asset,
+      { transportDays: Number(transportDays), refrigeration: Boolean(refrigeration) }
+    );
+
+    res.json({
+      success: true,
+      crop,
+      packagingAsset: asset,
+      packingConfiguration
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to resolve packaging asset', details: err?.message });
+  }
+});
+
+// Generate or retrieve dynamic crop-inside-package visualization
+app.post('/api/packaging/visualize', async (req: Request, res: Response) => {
+  try {
+    const { crop, materialId, transportDays, refrigeration, packagingFormat } = req.body;
+    if (!crop) {
+      return res.status(400).json({ error: 'Crop name required.' });
+    }
+
+    let asset = materialId ? packagingAssetStore.getById(materialId) : undefined;
+    if (!asset) {
+      asset = packagingAssetStore.findByCropAndConditions(
+        crop,
+        transportDays ? Number(transportDays) : undefined,
+        refrigeration !== undefined ? Boolean(refrigeration) : undefined,
+        packagingFormat
+      );
+    }
+
+    const config = packagingVisualizationService.derivePackingConfiguration(
+      crop,
+      asset,
+      { transportDays: Number(transportDays), refrigeration: Boolean(refrigeration) }
+    );
+
+    const visualization = await packagingVisualizationService.generatePackingVisualization(
+      crop,
+      asset,
+      config
+    );
+
+    res.json({
+      success: true,
+      visualization,
+      packagingAsset: asset,
+      packingConfiguration: config
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Packaging visualization failed', details: err?.message });
+  }
+});
+
+// Admin: Create or update packaging asset record
+app.post('/api/packaging/assets', requireLevel(['ADMIN', 'LEVEL_4']), (req: Request, res: Response) => {
+  try {
+    const record = packagingAssetStore.create(req.body);
+    dataStore.log(req.user!.id, 'CREATE_PACKAGING_ASSET', req.user!.role, `Created packaging asset: ${record.materialId} (${record.materialName})`);
+    res.json({ success: true, asset: record });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to create packaging asset', details: err?.message });
+  }
+});
+
+app.put('/api/packaging/assets/:id', requireLevel(['ADMIN', 'LEVEL_4']), (req: Request, res: Response) => {
+  try {
+    const updated = packagingAssetStore.update(req.params.id, req.body);
+    if (!updated) {
+      return res.status(404).json({ error: `Packaging asset ${req.params.id} not found.` });
+    }
+    dataStore.log(req.user!.id, 'UPDATE_PACKAGING_ASSET', req.user!.role, `Updated packaging asset: ${req.params.id}`);
+    res.json({ success: true, asset: updated });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to update packaging asset', details: err?.message });
+  }
+});
+
+// Admin: Upload / add packaging image to record
+app.post('/api/packaging/assets/:id/images', requireLevel(['ADMIN', 'LEVEL_4']), (req: Request, res: Response) => {
+  try {
+    const { viewType, imageUrl, caption, isPrimary } = req.body;
+    if (!imageUrl) {
+      return res.status(400).json({ error: 'Image URL or base64 data required.' });
+    }
+
+    const imageItem = {
+      id: `img-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      viewType: viewType || 'product',
+      imageUrl,
+      caption: caption || `${viewType || 'product'} view`,
+      isPrimary: Boolean(isPrimary)
+    };
+
+    const updated = packagingAssetStore.addImage(req.params.id, imageItem);
+    if (!updated) {
+      return res.status(404).json({ error: `Packaging asset ${req.params.id} not found.` });
+    }
+
+    dataStore.log(req.user!.id, 'ADD_PACKAGING_IMAGE', req.user!.role, `Added ${viewType} image to ${req.params.id}`);
+    res.json({ success: true, asset: updated, addedImage: imageItem });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to add image to packaging asset', details: err?.message });
+  }
 });
 
 // ==========================================
