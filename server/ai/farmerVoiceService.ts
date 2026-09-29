@@ -16,6 +16,7 @@ import { GoogleGenAI } from '@google/genai';
 import { levelEngines, Level1Input, Level1RecommendationResult } from '../engines/levelEngines';
 import { dataStore } from '../db/dataStore';
 import { PiperKokoroTTSProvider, GeminiAudioSTTProvider } from './voiceProviders';
+import { recommendPackaging, PackagingRecommendationResponse } from '../services/packagingRecommendationAdapter';
 
 export interface FarmerConversationContext {
   crop?: string | null;
@@ -236,9 +237,17 @@ export class FarmerVoiceService {
         return await this.converseWithLLM(cleanSpeech, history, normalizedContext, language);
       } catch (err: any) {
         const errMsg = err?.message || String(err);
-        if (err?.status === 403 || errMsg.includes('denied access') || errMsg.includes('PERMISSION_DENIED')) {
+        if (
+          err?.status === 403 ||
+          err?.status === 429 ||
+          errMsg.includes('denied access') ||
+          errMsg.includes('PERMISSION_DENIED') ||
+          errMsg.includes('resource_exhausted') ||
+          errMsg.includes('RESOURCE_EXHAUSTED') ||
+          errMsg.includes('quota')
+        ) {
           this.apiAccessDisabled = true;
-          console.info('[FarmerVoiceService] Cloud project restricted on key; transitioning to dynamic conversational agent.');
+          console.info('[FarmerVoiceService] Cloud API quota reached; smoothly transitioning to dynamic conversational agent.');
         } else {
           console.info('[FarmerVoiceService] Cloud LLM service unavailable; using dynamic conversational agent.');
         }
@@ -319,6 +328,19 @@ Return STRICT JSON ONLY:
         if (response) break;
       } catch (err: any) {
         lastError = err;
+        const errMsg = err?.message || String(err);
+        if (
+          err?.status === 403 ||
+          err?.status === 429 ||
+          errMsg.includes('denied access') ||
+          errMsg.includes('PERMISSION_DENIED') ||
+          errMsg.includes('resource_exhausted') ||
+          errMsg.includes('RESOURCE_EXHAUSTED') ||
+          errMsg.includes('quota')
+        ) {
+          this.apiAccessDisabled = true;
+          break;
+        }
       }
     }
 
@@ -1313,6 +1335,7 @@ Return STRICT JSON ONLY:
       updatedContext: updated,
       readyForRecommendation: isReady,
       recommendation: recommendationResult,
+      adaptedRecommendation: recommendationResult ? recommendPackaging(updated) : undefined,
       detailedReport,
       provider: 'Dynamic Kisan Multilingual Agent + FOODPACK Level-1 Scientific DSS',
       detectedLanguage: activeLanguage

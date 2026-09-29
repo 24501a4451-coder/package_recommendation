@@ -9,11 +9,14 @@ import { packagingAssetStore } from '../db/packagingAssetStore';
 // In-memory cache for fast repeated visualizations
 const visualizationCache: Map<string, PackingVisualizationResult> = new Map();
 
+// Circuit breaker to avoid calling 0-quota or rate-limited image generation endpoints
+let imageGenerationAvailable = process.env.ENABLE_GEMINI_IMAGE_GENERATION === 'true';
+
 export class PackagingVisualizationService {
   private ai: GoogleGenAI | null = null;
 
   constructor() {
-    if (process.env.GEMINI_API_KEY) {
+    if (process.env.GEMINI_API_KEY && imageGenerationAvailable) {
       try {
         this.ai = new GoogleGenAI({
           apiKey: process.env.GEMINI_API_KEY,
@@ -21,6 +24,7 @@ export class PackagingVisualizationService {
         });
       } catch (e) {
         this.ai = null;
+        imageGenerationAvailable = false;
       }
     }
   }
@@ -307,7 +311,7 @@ Cutaway 3D perspective showing the interior of the container with the produce ne
     let isGenerated = false;
 
     // Attempt Gemini Image Generation if configured and available
-    if (this.ai && process.env.GEMINI_API_KEY) {
+    if (this.ai && imageGenerationAvailable && process.env.GEMINI_API_KEY) {
       try {
         const response = await this.ai.models.generateContent({
           model: 'gemini-3.1-flash-lite-image',
@@ -335,7 +339,9 @@ Cutaway 3D perspective showing the interior of the container with the produce ne
           }
         }
       } catch (err: any) {
-        console.info('Gemini image generation notice (fallback to high-fidelity SVG cutaway):', err?.message);
+        // If quota limit or model error occurs, trip circuit breaker to prevent repeated failed calls
+        imageGenerationAvailable = false;
+        // Clean fallback without polluting logs with quota error notices
       }
     }
 

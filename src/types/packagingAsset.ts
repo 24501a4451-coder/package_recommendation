@@ -36,7 +36,17 @@ export interface PackagingScientificProps {
   burstingStrengthKPa?: number;
 }
 
+export interface PackagingShoppingInfo {
+  title: string;
+  supplier: string;
+  url: string;
+  source: string;
+  availability: string;
+  priceEstimate?: string;
+}
+
 export interface PackagingAssetRecord {
+  packageId?: string; // e.g. 'PKG-001'
   materialId: string; // e.g. 'MAT-001'
   materialName: string;
   packageType: string;
@@ -54,6 +64,7 @@ export interface PackagingAssetRecord {
   foodCategories: string[];
   source: string;
   validationStatus: 'Validated' | 'Pending Review' | 'Field Tested';
+  shoppingInfo?: PackagingShoppingInfo | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -69,6 +80,8 @@ export interface PackingConfiguration {
   handlingInstructions: string[];
   transportPrecautions: string[];
   stepByStepInstructions: string[];
+  dos?: string[];
+  donts?: string[];
 }
 
 export interface PackingVisualizationResult {

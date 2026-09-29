@@ -109,8 +109,11 @@ Return ONLY the transcribed text. Do not add conversational commentary or quotat
           successfulModel = modelName;
           break;
         }
-      } catch (e) {
-        // Continue to fallback model
+      } catch (e: any) {
+        const errMsg = e?.message || String(e);
+        if (errMsg.includes('resource_exhausted') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('quota') || e?.status === 429) {
+          break;
+        }
       }
     }
 

@@ -48,6 +48,7 @@ interface Props {
   onLiveStatusChange?: (status: GeminiLiveVisualStatus) => void;
   onLanguageChange?: (language: 'en' | 'hi' | 'te' | 'ta' | 'kn') => void;
   onExtractedContext?: (context: Partial<FarmerConversationContext>) => void;
+  onRecommendationReady?: (rec: Level1RecommendationResult, adaptedRec?: any, detailedReport?: any) => void;
   externalContext?: Partial<FarmerConversationContext>;
 }
 
@@ -56,6 +57,7 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({
   onLiveStatusChange,
   onLanguageChange,
   onExtractedContext,
+  onRecommendationReady,
   externalContext
 }) => {
   // Call States (Gemini Live / Siri / DeepSeek Call Paradigm)
@@ -107,6 +109,9 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({
   const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const speechTimeoutRef = useRef<any>(null);
+  const speechSilenceTimerRef = useRef<any>(null);
+  const accumulatedTranscriptRef = useRef<string>('');
+  const bargeInCounterRef = useRef<number>(0);
 
   // Mutable state trackers for callbacks
   const callActiveRef = useRef(false);
@@ -286,19 +291,32 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({
 
       // Voice Activity Detection: If user is making sound while we are listening
       if (!isSpeakingRef.current && !micMutedRef.current) {
-        if (level > 15) {
+        bargeInCounterRef.current = 0;
+        if (level > 14) {
           lastSpeechTimeRef.current = Date.now();
           if (!speechDetectedRef.current) {
             speechDetectedRef.current = true;
             setCallSubState('user_speaking');
           }
         } else if (speechDetectedRef.current) {
-          // If silence detected for 1.3 seconds after speech
+          // Siri-like responsive pause detection (800ms silence after speech)
           const silenceDuration = Date.now() - lastSpeechTimeRef.current;
-          if (silenceDuration > 1300) {
+          if (silenceDuration > 800) {
             speechDetectedRef.current = false;
             handleSilenceTurn();
           }
+        }
+      } else if (isSpeakingRef.current && !micMutedRef.current) {
+        // Siri full-duplex barge-in: If farmer talks into mic while assistant is speaking, interrupt immediately!
+        if (level > 28) {
+          bargeInCounterRef.current += 1;
+          if (bargeInCounterRef.current >= 3) {
+            bargeInCounterRef.current = 0;
+            stopSpeaking();
+            startListeningSession();
+          }
+        } else {
+          bargeInCounterRef.current = Math.max(0, bargeInCounterRef.current - 1);
         }
       }
 
@@ -309,8 +327,18 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({
   };
 
   const handleSilenceTurn = () => {
-    // If Web Speech API captured text, it will already be submitted by onresult.
-    // If not, trigger recording chunk fallback
+    if (speechSilenceTimerRef.current) {
+      clearTimeout(speechSilenceTimerRef.current);
+      speechSilenceTimerRef.current = null;
+    }
+    const textToSend = (accumulatedTranscriptRef.current || liveTranscript || '').trim();
+    if (textToSend) {
+      accumulatedTranscriptRef.current = '';
+      setLiveTranscript('');
+      handleUserSpeechInput(textToSend);
+      return;
+    }
+    // If Web Speech API has not captured text, trigger mediaRecorder chunk fallback
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       try {
         mediaRecorderRef.current.stop();
@@ -540,7 +568,7 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({
         }
 
         const recognition = new SpeechRecognition();
-        recognition.continuous = false;
+        recognition.continuous = true;
         recognition.interimResults = true;
 
         const langMap: Record<string, string> = {
@@ -560,41 +588,58 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({
 
         recognition.onresult = (event: any) => {
           let interim = '';
+          let final = '';
           for (let i = event.resultIndex; i < event.results.length; ++i) {
             if (event.results[i].isFinal) {
-              const finalTranscript = event.results[i][0].transcript;
-              setLiveTranscript('');
-              handleUserSpeechInput(finalTranscript);
-              return;
+              final += event.results[i][0].transcript + ' ';
             } else {
               interim += event.results[i][0].transcript;
             }
           }
-          setLiveTranscript(interim);
-          if (interim.trim()) {
+
+          if (final.trim()) {
+            accumulatedTranscriptRef.current = (accumulatedTranscriptRef.current + ' ' + final).trim();
+          }
+
+          const combined = (accumulatedTranscriptRef.current + (interim ? ' ' + interim : '')).trim();
+          setLiveTranscript(combined);
+
+          if (combined) {
             setCallSubState('user_speaking');
             lastSpeechTimeRef.current = Date.now();
+
+            // Siri debounced turn submission: if no new speech for 850ms, auto-process!
+            if (speechSilenceTimerRef.current) clearTimeout(speechSilenceTimerRef.current);
+            speechSilenceTimerRef.current = setTimeout(() => {
+              if (callActiveRef.current && !isSpeakingRef.current) {
+                const textToSend = (accumulatedTranscriptRef.current || combined).trim();
+                if (textToSend) {
+                  accumulatedTranscriptRef.current = '';
+                  setLiveTranscript('');
+                  handleUserSpeechInput(textToSend);
+                }
+              }
+            }, 850);
           }
         };
 
         recognition.onerror = (event: any) => {
           if (event.error !== 'no-speech' && event.error !== 'aborted') {
-            console.warn('Speech recognition warning:', event.error);
+            console.warn('Speech recognition notice:', event.error);
           }
-          // If speech recognition aborted, gently fall back to MediaRecorder audio chunk
           if (event.error === 'network' || event.error === 'not-allowed') {
             fallbackToServerAudioTranscription();
           }
         };
 
         recognition.onend = () => {
-          // If listening ended and nothing was captured, keep ready
-          if (callActiveRef.current && !isSpeakingRef.current && !micMutedRef.current && callSubState === 'listening') {
+          // If listening ended while still active and not speaking, re-open immediately
+          if (callActiveRef.current && !isSpeakingRef.current && !micMutedRef.current && callSubState !== 'thinking' && callSubState !== 'speaking') {
             setTimeout(() => {
               if (callActiveRef.current && !isSpeakingRef.current && !micMutedRef.current) {
                 startListeningSession();
               }
-            }, 500);
+            }, 300);
           }
         };
 
@@ -746,6 +791,7 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({
         if (data.detailedReport) {
           setDetailedReport(data.detailedReport);
         }
+        onRecommendationReady?.(data.recommendation, data.adaptedRecommendation, data.detailedReport);
       }
 
       // Speak reply aloud (continuous hands-free loop triggers automatically when speech ends)
