@@ -292,9 +292,9 @@ export const SEED_PACKAGING_ASSETS: PackagingAssetRecord[] = [
     materialName: 'Ventilated High-Density Polyethylene (HDPE) Produce Crate',
     packageType: 'Reusable Ventilated Harvest Crate',
     materialComposition: 'Virgin Food-Grade HDPE copolymer with UV stabilizers and high-impact structural ribs',
-    realProductImage: createProductGraphic('crate', 'product'),
+    realProductImage: '/src/assets/images/aerated_harvest_crate_1790716442675.jpg',
     additionalImages: [
-      { id: 'mat-001-img-1', viewType: 'product', imageUrl: createProductGraphic('crate', 'product'), caption: 'Angled product perspective with ventilation grid', isPrimary: true },
+      { id: 'mat-001-img-1', viewType: 'product', imageUrl: '/src/assets/images/aerated_harvest_crate_1790716442675.jpg', caption: 'Industrial HDPE ventilated harvest crate with reinforced ribs', isPrimary: true },
       { id: 'mat-001-img-2', viewType: 'inside', imageUrl: createProductGraphic('crate', 'inside'), caption: 'Interior floor view showing perforated drainage and air chimneys' },
       { id: 'mat-001-img-3', viewType: 'side', imageUrl: createProductGraphic('crate', 'side'), caption: 'Side elevation with 32% convective airflow slots and interlocking feet' }
     ],
@@ -347,9 +347,9 @@ export const SEED_PACKAGING_ASSETS: PackagingAssetRecord[] = [
     materialName: '5-Ply Kraft Corrugated Box with Chimney Die-Cut Vents',
     packageType: 'Heavy-Duty Telescopic Ventilated CFB Box',
     materialComposition: '5-Ply Virgin Unbleached Kraft Paperboard (Top/Bottom 180 GSM, Fluting 140 GSM B/C Flute)',
-    realProductImage: createProductGraphic('kraft_box', 'product'),
+    realProductImage: '/src/assets/images/vented_corrugated_crate_1790716400219.jpg',
     additionalImages: [
-      { id: 'mat-002-img-1', viewType: 'product', imageUrl: createProductGraphic('kraft_box', 'product'), caption: 'Heavy-duty 5-ply Kraft telescopic carton with side chimney vents', isPrimary: true },
+      { id: 'mat-002-img-1', viewType: 'product', imageUrl: '/src/assets/images/vented_corrugated_crate_1790716400219.jpg', caption: 'Heavy-duty 5-ply Kraft telescopic carton with side chimney vents', isPrimary: true },
       { id: 'mat-002-img-2', viewType: 'inside', imageUrl: createProductGraphic('kraft_box', 'inside'), caption: 'Interior cavity with shock-absorbing fluted Kraft floor' }
     ],
     insidePackageImage: createProductGraphic('kraft_box', 'inside'),
@@ -399,9 +399,9 @@ export const SEED_PACKAGING_ASSETS: PackagingAssetRecord[] = [
     materialName: 'Breathable Molded Bagasse Sugarcane Pulp Clamshell Punnet',
     packageType: 'Micro-Porous Compostable Bio-Fiber Punnet',
     materialComposition: '100% Sugarcane Bagasse Pulp, PFAS-free water-resistant sizing',
-    realProductImage: createProductGraphic('bagasse_punnet', 'product'),
+    realProductImage: '/src/assets/images/molded_fiber_punnet_1790716428565.jpg',
     additionalImages: [
-      { id: 'mat-003-img-1', viewType: 'product', imageUrl: createProductGraphic('bagasse_punnet', 'product'), caption: 'Bio-fiber punnet with slotted lid and moisture-absorbing capillary base', isPrimary: true }
+      { id: 'mat-003-img-1', viewType: 'product', imageUrl: '/src/assets/images/molded_fiber_punnet_1790716428565.jpg', caption: 'Bio-fiber punnet with slotted lid and moisture-absorbing capillary base', isPrimary: true }
     ],
     insidePackageImage: createProductGraphic('bagasse_punnet', 'product'),
     dimensions: {
@@ -450,9 +450,9 @@ export const SEED_PACKAGING_ASSETS: PackagingAssetRecord[] = [
     materialName: 'Equilibrium MAP Micro-Perforated Breathable Film Pouch',
     packageType: 'Stand-Up Laser-Microperforated EMAP Pouch',
     materialComposition: 'Co-extruded BOPP/PE (35µm) with internal food-grade anti-fog surfactant coating',
-    realProductImage: createProductGraphic('emap_pouch', 'product'),
+    realProductImage: '/src/assets/images/micro_perforated_pouch_1790716414431.jpg',
     additionalImages: [
-      { id: 'mat-004-img-1', viewType: 'product', imageUrl: createProductGraphic('emap_pouch', 'product'), caption: 'Transparent anti-fog pouch with laser pinholes for equilibrium modified atmosphere', isPrimary: true }
+      { id: 'mat-004-img-1', viewType: 'product', imageUrl: '/src/assets/images/micro_perforated_pouch_1790716414431.jpg', caption: 'Transparent anti-fog pouch with laser pinholes for equilibrium modified atmosphere', isPrimary: true }
     ],
     insidePackageImage: createProductGraphic('emap_pouch', 'product'),
     dimensions: {

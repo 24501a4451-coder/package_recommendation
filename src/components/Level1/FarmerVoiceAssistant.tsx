@@ -111,6 +111,8 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({
   const speechTimeoutRef = useRef<any>(null);
   const speechSilenceTimerRef = useRef<any>(null);
   const accumulatedTranscriptRef = useRef<string>('');
+  const latestTranscriptRef = useRef<string>('');
+  const isThinkingOrSpeakingRef = useRef<boolean>(false);
   const bargeInCounterRef = useRef<number>(0);
 
   // Mutable state trackers for callbacks
@@ -142,6 +144,10 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  useEffect(() => {
+    isThinkingOrSpeakingRef.current = callSubState === 'thinking' || callSubState === 'speaking';
+  }, [callSubState]);
 
   // Notify parent of Live status transitions (listening, processing, speaking, idle)
   useEffect(() => {
@@ -716,6 +722,79 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({
     setLiveTranscript('');
     setErrorMessage(null);
 
+    // Direct voice language command detection (e.g. "speak in telugu", "switch to hindi", "talk in tamil", "kannada", native scripts)
+    const textLower = text.toLowerCase();
+    let directVoiceLang: 'en' | 'hi' | 'te' | 'ta' | 'kn' | null = null;
+    if (
+      textLower.includes('telugu') ||
+      textLower.includes('తెలుగు') ||
+      textLower.includes('matladu') ||
+      textLower.includes('matlaadu') ||
+      textLower.includes('cheppu') ||
+      textLower.includes('matladandi') ||
+      textLower.includes('cheppandi') ||
+      textLower.includes('telugulo') ||
+      textLower.includes('telugu lo') ||
+      /[\u0C00-\u0C7F]/.test(text)
+    ) {
+      directVoiceLang = 'te';
+    } else if (
+      textLower.includes('hindi') ||
+      textLower.includes('हिंदी') ||
+      textLower.includes('bolo') ||
+      textLower.includes('boliye') ||
+      textLower.includes('batao') ||
+      textLower.includes('baat karo') ||
+      textLower.includes('hindi me') ||
+      textLower.includes('hindi mein') ||
+      textLower.includes('hindime') ||
+      /[\u0900-\u097F]/.test(text)
+    ) {
+      directVoiceLang = 'hi';
+    } else if (
+      textLower.includes('tamil') ||
+      textLower.includes('தமிழ்') ||
+      textLower.includes('pesu') ||
+      textLower.includes('pesunga') ||
+      textLower.includes('sollu') ||
+      textLower.includes('sollunga') ||
+      textLower.includes('tamilil') ||
+      textLower.includes('tamil la') ||
+      /[\u0B80-\u0BFF]/.test(text)
+    ) {
+      directVoiceLang = 'ta';
+    } else if (
+      textLower.includes('kannada') ||
+      textLower.includes('ಕನ್ನಡ') ||
+      textLower.includes('mathadi') ||
+      textLower.includes('mathanadi') ||
+      textLower.includes('heli') ||
+      textLower.includes('heliri') ||
+      textLower.includes('kannadadalli') ||
+      textLower.includes('kannada dalli') ||
+      /[\u0C80-\u0CFF]/.test(text)
+    ) {
+      directVoiceLang = 'kn';
+    } else if (
+      textLower.includes('speak in english') ||
+      textLower.includes('talk in english') ||
+      textLower.includes('switch to english') ||
+      textLower.includes('change to english') ||
+      textLower.includes('english please') ||
+      textLower.includes('english lo') ||
+      textLower.includes('english mein') ||
+      textLower.includes('angrezi') ||
+      textLower.trim() === 'english'
+    ) {
+      directVoiceLang = 'en';
+    }
+
+    if (directVoiceLang && directVoiceLang !== selectedLangRef.current) {
+      setSelectedLanguage(directVoiceLang);
+      selectedLangRef.current = directVoiceLang;
+      onLanguageChange?.(directVoiceLang);
+    }
+
     const farmerMsg: ConversationTurn = {
       role: 'farmer',
       content: text,
@@ -959,34 +1038,15 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({
                 Live Voice Call with Packaging Buddy
               </h2>
               <p className="text-xs text-slate-300 leading-relaxed">
-                Connect on a direct voice call. Just talk naturally in English, Telugu, Hindi, Tamil, or Kannada. Speak to it, interrupt it anytime, or say: <em className="text-emerald-300 font-semibold">"Speak in Telugu"</em>, and it adapts on the fly.
+                Connect on a direct voice call. Just talk naturally in English, Telugu, Hindi, Tamil, or Kannada. Speak to it, interrupt it anytime, or say: <em className="text-emerald-300 font-semibold">"Speak in Telugu"</em>, <em className="text-teal-300 font-semibold">"Speak in Hindi"</em>, or <em className="text-cyan-300 font-semibold">"Speak in Tamil"</em>, and it adapts on the fly.
               </p>
 
-              {/* Language Pills */}
-              <div className="flex flex-wrap items-center gap-2 pt-2">
-                <span className="text-[10px] font-mono text-slate-400 mr-1 flex items-center gap-1">
-                  <Globe className="w-3 h-3 text-emerald-400" /> Start call in:
+              {/* Multilingual Voice Detection Badge */}
+              <div className="flex items-center gap-2 pt-2 text-xs text-slate-300">
+                <Globe className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>
+                  <strong>Multilingual Voice Core:</strong> English, తెలుగు, हिंदी, தமிழ், and ಕನ್ನಡ. The assistant automatically recognizes your spoken language from your voice.
                 </span>
-                {[
-                  { code: 'en', label: 'English (IN)' },
-                  { code: 'te', label: 'తెలుగు (Telugu)' },
-                  { code: 'hi', label: 'हिंदी (Hindi)' },
-                  { code: 'ta', label: 'தமிழ் (Tamil)' },
-                  { code: 'kn', label: 'ಕನ್ನಡ (Kannada)' }
-                ].map((l) => (
-                  <button
-                    key={l.code}
-                    type="button"
-                    onClick={() => setSelectedLanguage(l.code as any)}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer border ${
-                      selectedLanguage === l.code
-                        ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300 shadow-sm'
-                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    {l.label}
-                  </button>
-                ))}
               </div>
             </div>
 
@@ -995,17 +1055,32 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({
               <button
                 type="button"
                 onClick={handleStartCall}
-                className="w-full md:w-auto px-8 py-5 rounded-2xl bg-gradient-to-r from-emerald-500 via-emerald-600 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-extrabold text-base shadow-2xl shadow-emerald-500/30 transition transform hover:-translate-y-0.5 active:scale-95 cursor-pointer flex items-center justify-center gap-3"
+                className="w-full md:w-auto px-8 py-5 rounded-2xl bg-gradient-to-r from-emerald-500 via-teal-500 to-indigo-600 hover:from-emerald-400 hover:to-indigo-500 text-white font-extrabold text-base shadow-2xl shadow-emerald-500/30 transition transform hover:-translate-y-0.5 active:scale-95 cursor-pointer flex items-center justify-center gap-3 border border-white/20"
               >
                 <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center animate-pulse">
                   <Phone className="w-5 h-5 text-white" />
                 </div>
-                <span>🎙️ Talk to AI • Start Voice Call</span>
+                <span>🎙️ Talk to Siri-AI • Start Voice Call</span>
               </button>
               <span className="text-[11px] text-slate-400 font-mono">
-                Hands-Free Audio Stream • Auto Speech Detection
+                Real-Time Audio Stream • Hands-Free Conversational AI
               </span>
             </div>
+          </div>
+
+          {/* Hands-free Voice Capability Notice */}
+          <div className="mt-5 pt-4 border-t border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-300">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center shrink-0">
+                <Sparkles className="w-4 h-4 text-emerald-400" />
+              </div>
+              <p className="leading-relaxed">
+                <strong>Pure Voice Driven:</strong> No option selection needed. Speak your crop, transit days, and vehicle conditions — AI analyzes everything directly from your voice.
+              </p>
+            </div>
+            <span className="text-[10px] font-mono font-semibold text-emerald-400 bg-emerald-500/10 px-3 py-1.5 rounded-xl border border-emerald-500/20 shrink-0">
+              🎙️ Automatic Voice Analysis
+            </span>
           </div>
         </div>
       ) : null}
@@ -1031,28 +1106,22 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({
             </div>
 
             <div className="flex items-center gap-2">
-              {/* Dynamic Language Switcher Pills */}
-              <div className="hidden sm:flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 text-[11px]">
-                {[
-                  { code: 'en', label: 'EN' },
-                  { code: 'te', label: 'తెలుగు' },
-                  { code: 'hi', label: 'हिंदी' },
-                  { code: 'ta', label: 'தமிழ்' },
-                  { code: 'kn', label: 'ಕನ್ನಡ' }
-                ].map((l) => (
-                  <button
-                    key={l.code}
-                    type="button"
-                    onClick={() => handleSwitchLanguage(l.code as any)}
-                    className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-                      selectedLanguage === l.code
-                        ? 'bg-emerald-600 text-white shadow-sm'
-                        : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    {l.label}
-                  </button>
-                ))}
+              {/* Dynamic Voice Detected Language Badge */}
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs">
+                <Globe className="w-3.5 h-3.5 text-emerald-400" />
+                <span className="text-[10px] text-slate-400 uppercase font-mono">Voice:</span>
+                <span className="text-xs font-bold text-emerald-300">
+                  {selectedLanguage === 'te'
+                    ? 'తెలుగు (Telugu)'
+                    : selectedLanguage === 'hi'
+                    ? 'हिंदी (Hindi)'
+                    : selectedLanguage === 'ta'
+                    ? 'தமிழ் (Tamil)'
+                    : selectedLanguage === 'kn'
+                    ? 'ಕನ್ನಡ (Kannada)'
+                    : 'English'}
+                </span>
+                <span className="text-[10px] text-slate-500 font-mono hidden md:inline">• Voice Controlled</span>
               </div>
 
               {/* Minimize Call */}
@@ -1189,65 +1258,21 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({
               )}
             </div>
 
-            {/* DYNAMIC SUGGESTION CHIPS (TAP OR SPEAK) */}
-            {currentContext.currentQuestionOptions && currentContext.currentQuestionOptions.length > 0 ? (
-              <div className="w-full max-w-2xl space-y-2 pt-1 text-left">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-mono uppercase text-emerald-400 font-bold flex items-center gap-1.5">
-                    <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-                    Tap an option or speak naturally:
-                  </span>
-                  <span className="text-[10px] text-slate-500 font-mono">Custom answers always accepted</span>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  {currentContext.currentQuestionOptions.map((opt, i) => (
-                    <button
-                      key={i}
-                      type="button"
-                      onClick={() => {
-                        if (opt.toLowerCase().includes('other')) {
-                          const custom = prompt('Speak or type your custom requirement: (e.g. cherry tomatoes, reusable plastic crate)');
-                          if (custom && custom.trim()) {
-                            handleUserSpeechInput(custom.trim());
-                          }
-                        } else {
-                          handleUserSpeechInput(opt);
-                        }
-                      }}
-                      className="px-3 py-1.5 rounded-xl bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-500/40 text-emerald-200 hover:text-white text-xs font-semibold cursor-pointer transition shadow-xs flex items-center gap-1.5 active:scale-95"
-                    >
-                      <span>{opt}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              /* DEFAULT QUICK PROMPTS */
-              <div className="w-full max-w-2xl space-y-2 pt-1">
-                <span className="text-[10px] font-mono uppercase text-slate-400 font-bold block text-left">
-                  💡 Quick Voice Prompts (Tap or speak):
+            {/* VOICE-FIRST LIVE GUIDANCE (NO BUTTONS / OPTIONS PICKING) */}
+            <div className="w-full max-w-2xl bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 border border-emerald-500/20 rounded-2xl p-4 text-left space-y-1.5 shadow-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-mono uppercase text-emerald-400 font-bold flex items-center gap-1.5">
+                  <Mic className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+                  Voice Analysis Active • No Manual Options Needed
                 </span>
-                <div className="flex flex-wrap items-center gap-2">
-                  {[
-                    "I have 500kg of fresh tomatoes",
-                    "Takes 6 hours to reach the mandi",
-                    "No cold storage, hot 30 degrees",
-                    "Can I use a cheaper package?",
-                    "Speak in Telugu",
-                    "English lo continue cheyyi"
-                  ].map((phrase, i) => (
-                    <button
-                      key={i}
-                      type="button"
-                      onClick={() => handleUserSpeechInput(phrase)}
-                      className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white text-xs font-medium cursor-pointer transition shadow-xs"
-                    >
-                      "{phrase}"
-                    </button>
-                  ))}
-                </div>
+                <span className="text-[10px] text-emerald-400/80 font-mono">
+                  Hands-Free Live Voice
+                </span>
               </div>
-            )}
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Just talk directly into your microphone. Say what you harvested, where it is traveling, or say: <span className="text-emerald-300 font-semibold">"Speak in Hindi"</span>, <span className="text-teal-300 font-semibold">"Speak in Telugu"</span>, or <span className="text-cyan-300 font-semibold">"Speak in Tamil"</span>. The AI analyzes your voice and adjusts instantly.
+              </p>
+            </div>
 
             {/* LIVE HARVEST UNDERSTANDING CHECKLIST */}
             <div className="w-full max-w-2xl bg-slate-950/80 rounded-2xl border border-slate-800/80 p-3 sm:p-4 text-xs space-y-2">
@@ -1753,6 +1778,24 @@ export const FarmerVoiceAssistant: React.FC<Props> = ({
           report={detailedReport}
           onClose={() => setShowReportModal(false)}
         />
+      )}
+
+      {/* FLOATING SIRI-STYLE VOICE BUTTON (ACCESSIBLE ANYWHERE ON SCREEN) */}
+      {!callActive && (
+        <button
+          type="button"
+          onClick={handleStartCall}
+          className="fixed bottom-6 right-6 z-40 p-4 rounded-full bg-gradient-to-tr from-indigo-600 via-purple-600 to-pink-500 hover:from-indigo-500 hover:to-pink-400 text-white shadow-2xl shadow-purple-500/50 transition transform hover:scale-110 active:scale-95 cursor-pointer flex items-center gap-3 border-2 border-white/30 backdrop-blur-md group"
+          title="Talk to Siri-like Packaging Voice AI"
+        >
+          <div className="relative flex items-center justify-center">
+            <span className="absolute -inset-1 rounded-full bg-cyan-400 blur-sm animate-ping opacity-75" />
+            <Radio className="w-6 h-6 text-white relative z-10" />
+          </div>
+          <span className="font-extrabold text-xs tracking-wide pr-1 hidden sm:inline">
+            Talk like Siri
+          </span>
+        </button>
       )}
 
     </div>

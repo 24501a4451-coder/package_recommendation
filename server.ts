@@ -1,8 +1,9 @@
 import express, { Request, Response, NextFunction } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import QRCode from 'qrcode';
-import { dataStore, User, PackagingMaterial, FoodCommodity } from './server/db/dataStore';
+import { dataStore, User, PackagingMaterial, FoodCommodity, RecommendationRecord } from './server/db/dataStore';
 import { visionAIService } from './server/ai/visionService';
 import { assistantService } from './server/ai/assistantService';
 import { visualizationService } from './server/ai/visualizationService';
@@ -19,6 +20,9 @@ import { packagingRecommendationAdapter, recommendPackaging } from './server/ser
 import { stepExplanationService } from './server/services/stepExplanationService';
 
 dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Ensure external HTTPS calls (TTS audio synthesis, Google GenAI) work reliably across environments
 if (!process.env.NODE_TLS_REJECT_UNAUTHORIZED) {
@@ -1356,37 +1360,70 @@ app.post('/api/recommendations/save-farmer', async (req: Request, res: Response)
     const userId = req.user ? req.user.id : 'usr-farmer-01';
     const userName = req.user ? req.user.name : 'Ramesh Patel (Kisan Agro Farms)';
 
-    const record = {
+    const transportDuration = farmerContext?.transportDurationDays || 2;
+    const record: RecommendationRecord = {
       id: recId,
       userId,
       userName,
       level: 'LEVEL_1' as const,
       title: `${cropName} Post-Harvest Packaging Suite`,
       foodName: cropName,
-      inputScenario: farmerContext || {},
-      topCandidate: {
-        containerName: recommendation.package?.packageType,
-        materialStructure: recommendation.material?.name,
-        lidType: recommendation.package?.ventilation,
-        greaseResistance: 'TAPPI T559 Certified',
-        moistureManagement: recommendation.package?.ventilation
+      components: [cropName],
+      foodProfile: {
+        name: cropName,
+        category: 'Fresh Produce',
+        farmerContext
       },
-      actionableSummary: recommendation.reason,
+      inputScenario: farmerContext || {},
+      topCandidate: recommendation.scientificResult?.recommendedPackaging,
+      actionableSummary: {
+        packagingName: recommendation.package?.packageType || 'Vented Corrugated Box',
+        materialName: recommendation.material?.name || 'Corrugated Paperboard',
+        materialCategory: 'Bio-Based / Fiber',
+        packageStyle: recommendation.package?.packageType || 'Vented Box',
+        configuration: recommendation.package?.dimensions || 'Standard produce pack',
+        quickWhy: recommendation.reason,
+        deliveryWindow: `${transportDuration} days transit`,
+        packingInstructions: recommendation.packingConfiguration?.dos || []
+      },
       detailedAnalysis: {
         packing: recommendation.packingConfiguration,
         shelfLife: recommendation.shelfLifeDays
       },
       configuration: {
-        containerName: recommendation.package?.packageType,
-        structure: recommendation.material?.composition,
-        ventilation: recommendation.package?.ventilation
+        containerName: recommendation.package?.packageType || 'Standard Crate',
+        materialId: recommendation.material?.materialId || 'MAT-001',
+        structure: recommendation.material?.composition || '',
+        containerStyle: recommendation.package?.packageType || '',
+        compartments: 'Bulk Single Compartment',
+        lidType: recommendation.package?.ventilation || 'Vented Lid',
+        venting: recommendation.package?.ventilation || 'Vented',
+        sauceContainer: 'Not Applicable',
+        leakageProtection: 'Natural Drainage',
+        greaseResistance: 'TAPPI T559 Certified',
+        moistureManagement: recommendation.package?.ventilation || 'High breathability'
       },
-      alternatives: recommendation.alternatives || [],
+      alternatives: (recommendation.alternatives || []).map((alt: any) => ({
+        name: alt.name,
+        tradeoff: alt.tradeoff,
+        costDelta: alt.costDelta || 'Comparable'
+      })),
       whyExplanation: recommendation.reason,
       evidence: recommendation.evidence || [],
+      assumptions: [
+        'Produce harvested at optimal commercial maturity stage',
+        'Standard transit ventilation maintained'
+      ],
       limitations: recommendation.limitations || [],
+      validationRequired: [
+        'Visual produce quality check upon destination arrival'
+      ],
       sustainabilityScore: recommendation.sustainabilityRating || 90,
-      costEstimate: `₹${(recommendation.costPerUnitINR || 45).toFixed(2)} / unit`,
+      costEstimate: {
+        unitCostINR: recommendation.costPerUnitINR || 45,
+        currency: 'INR',
+        basis: 'Per wholesale produce container unit'
+      },
       aiMode: 'REAL' as const,
       qrCodeUrl,
       createdAt: new Date().toISOString()

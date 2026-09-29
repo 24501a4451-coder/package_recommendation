@@ -82,7 +82,7 @@ export class PackagingRecommendationAdapter {
       storageTempC: storageTemp,
       relativeHumidity: humidity,
       storageType: storageType as any,
-      transportDays: transportDays,
+      transportDurationDays: transportDays,
       targetShelfLifeDays: transportDays + 5,
       mapRequirement: 'Automatic DSS Selection',
       packagingFormat: (farmerContext.packagingFormatPreference as any) || 'Micro-Perforated Pouch / Bag',
@@ -159,7 +159,7 @@ export class PackagingRecommendationAdapter {
         dos,
         donts
       },
-      requirements: scientificResult.foodRequirements.map(r => `${r.name}: ${r.targetSpecification}`),
+      requirements: scientificResult.foodRequirements.map(r => `${r.sensitivityName}: ${r.requirementDescription}`),
       reason: scientificResult.justNecessaryPackaging?.explanation || 
         `Selected ${asset.packageType} because freshly harvested ${cropName} undergoes active postharvest metabolic respiration. The calibrated ventilation permits respiratory heat and vapor egress, suppressing humidity condensation and sour rotting, while rigid sidewalls isolate produce from road vibration impact.`,
       alternatives: scientificResult.alternatives || [

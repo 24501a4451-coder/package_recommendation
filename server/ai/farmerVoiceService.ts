@@ -186,6 +186,7 @@ export interface FarmerConverseResponse {
   updatedContext: FarmerConversationContext;
   readyForRecommendation: boolean;
   recommendation?: Level1RecommendationResult;
+  adaptedRecommendation?: PackagingRecommendationResponse;
   detailedReport?: FarmerDetailedReport;
   provider: string;
   detectedLanguage?: string;
@@ -268,16 +269,16 @@ export class FarmerVoiceService {
     language: string
   ): Promise<FarmerConverseResponse> {
     const prompt = `You are "Kisan Mitra" (Farmer Packaging Buddy), an empathetic, knowledgeable live conversational voice agent for postharvest agricultural packaging (FOODPACK-AI).
-You are on an active live voice call with a farmer or agricultural producer.
+You are on an active live voice call with a farmer or agricultural producer like Siri.
 
 CRITICAL VOICE CALL RULES:
 1. Speak warmly and practically in 1 to 2 spoken sentences maximum (suitable for voice synthesis).
-2. DO NOT use fixed scripts or questionnaires.
+2. DO NOT use fixed scripts, questionnaires, or offer lists of numbered options. The user is hands-free and talking with voice only.
 3. UNDERSTAND MULTI-FACT ANSWERS: A farmer may say "I have fresh tomatoes, 50 kg, sending to Vijayawada tomorrow morning in normal tempo." Extract all facts at once!
 4. REMEMBER WHAT WAS ANSWERED: Never ask for facts that are already in "confirmedFields" or marked in "unknownFields".
 5. ANSWER FARMER QUESTIONS: If the farmer asks "Why do you need to know that?" or "Can I use cardboard?", explain scientifically yet simply.
 6. CORRECTIONS: If the farmer corrects an earlier statement (e.g. "Actually it will take 3 days"), update context seamlessly.
-7. LANGUAGE: Respond in ${language === 'te' ? 'Telugu' : language === 'hi' ? 'Hindi' : language === 'ta' ? 'Tamil' : language === 'kn' ? 'Kannada' : 'English'}. If the user asks to switch language, immediately switch and update "detectedLanguage".
+7. LANGUAGE SWITCHING: Respond in ${language === 'te' ? 'Telugu' : language === 'hi' ? 'Hindi' : language === 'ta' ? 'Tamil' : language === 'kn' ? 'Kannada' : 'English'}. If the user asks or commands to switch language (e.g. "speak in Hindi", "speak in Telugu", "talk in Tamil", "speak in English", "kannada dalli mathadi", "हिंदी में बात करो", "తెలుగులో మాట్లాడు"), immediately switch your response language and update "detectedLanguage" to that language code ('en', 'hi', 'te', 'ta', 'kn').
 8. DECISION: If we have crop + duration + temperature/refrigeration (or ambient state), set "readyForRecommendation": true. Otherwise, ask the single most important missing packaging question.
 
 CURRENT STRUCTURED CONTEXT:
@@ -444,13 +445,7 @@ Return STRICT JSON ONLY:
       updatedContext.farmerProblemsAnalysis = this.analyzeFarmerProblems(updatedContext.commodity, updatedContext, recommendationResult);
       updatedContext.threeLevelRecommendation = this.generateThreeLevelRecommendation(updatedContext.commodity, updatedContext, recommendationResult, detectedLang);
       updatedContext.recommendationDelivered = true;
-      updatedContext.currentQuestionOptions = [
-        'Why this packaging?',
-        'Cheaper option unda?',
-        'Biodegradable option unda?',
-        'What if transit takes 12 hours?',
-        'Cold storage unte?'
-      ];
+      updatedContext.currentQuestionOptions = undefined;
     }
 
     this.logTurn({
@@ -516,16 +511,123 @@ Return STRICT JSON ONLY:
     const isTamilScript = /[\u0B80-\u0BFF]/.test(speech);
     const isKannadaScript = /[\u0C80-\u0CFF]/.test(speech);
 
-    if (isTeluguScript || textLower.includes('telugu') || textLower.includes('తెలుగు')) {
+    if (
+      isTeluguScript ||
+      textLower.includes('telugu') ||
+      textLower.includes('తెలుగు') ||
+      textLower.includes('matladu') ||
+      textLower.includes('matlaadu') ||
+      textLower.includes('cheppu') ||
+      textLower.includes('matladandi') ||
+      textLower.includes('cheppandi') ||
+      textLower.includes('telugulo') ||
+      textLower.includes('telugu lo')
+    ) {
       activeLanguage = 'te';
-    } else if (isHindiScript || textLower.includes('hindi') || textLower.includes('हिंदी')) {
+    } else if (
+      isHindiScript ||
+      textLower.includes('hindi') ||
+      textLower.includes('हिंदी') ||
+      textLower.includes('bolo') ||
+      textLower.includes('boliye') ||
+      textLower.includes('batao') ||
+      textLower.includes('baat karo') ||
+      textLower.includes('hindi me') ||
+      textLower.includes('hindi mein') ||
+      textLower.includes('hindime')
+    ) {
       activeLanguage = 'hi';
-    } else if (isTamilScript || textLower.includes('tamil') || textLower.includes('தமிழ்')) {
+    } else if (
+      isTamilScript ||
+      textLower.includes('tamil') ||
+      textLower.includes('தமிழ்') ||
+      textLower.includes('pesu') ||
+      textLower.includes('pesunga') ||
+      textLower.includes('sollu') ||
+      textLower.includes('sollunga') ||
+      textLower.includes('tamilil') ||
+      textLower.includes('tamil la')
+    ) {
       activeLanguage = 'ta';
-    } else if (isKannadaScript || textLower.includes('kannada') || textLower.includes('ಕನ್ನಡ')) {
+    } else if (
+      isKannadaScript ||
+      textLower.includes('kannada') ||
+      textLower.includes('ಕನ್ನಡ') ||
+      textLower.includes('mathadi') ||
+      textLower.includes('mathanadi') ||
+      textLower.includes('heli') ||
+      textLower.includes('heliri') ||
+      textLower.includes('kannadadalli') ||
+      textLower.includes('kannada dalli')
+    ) {
       activeLanguage = 'kn';
-    } else if (textLower.includes('english')) {
+    } else if (
+      textLower.includes('speak in english') ||
+      textLower.includes('talk in english') ||
+      textLower.includes('switch to english') ||
+      textLower.includes('change to english') ||
+      textLower.includes('english please') ||
+      textLower.includes('english lo') ||
+      textLower.includes('english mein') ||
+      textLower.includes('angrezi') ||
+      textLower.trim() === 'english'
+    ) {
       activeLanguage = 'en';
+    }
+
+    // Direct voice language switch request handling (e.g. "speak in telugu", "switch to hindi")
+    const isExplicitLanguageSwitch =
+      textLower.includes('speak in') ||
+      textLower.includes('switch to') ||
+      textLower.includes('talk in') ||
+      textLower.includes('change to') ||
+      textLower.includes('language') ||
+      textLower.includes('bhasha') ||
+      textLower.includes('matladu') ||
+      textLower.includes('matlaadu') ||
+      textLower.includes('cheppu') ||
+      textLower.includes('bolo') ||
+      textLower.includes('boliye') ||
+      textLower.includes('pesu') ||
+      textLower.includes('mathadi') ||
+      textLower.trim() === 'telugu' ||
+      textLower.trim() === 'hindi' ||
+      textLower.trim() === 'tamil' ||
+      textLower.trim() === 'kannada' ||
+      textLower.trim() === 'english';
+
+    const hasCropInSwitch =
+      textLower.includes('tomato') ||
+      textLower.includes('tamatar') ||
+      textLower.includes('mango') ||
+      textLower.includes('strawberr') ||
+      textLower.includes('potato') ||
+      textLower.includes('onion') ||
+      textLower.includes('grape') ||
+      textLower.includes('banana') ||
+      textLower.includes('broccoli') ||
+      textLower.includes('టమాట') ||
+      textLower.includes('మామిడి');
+
+    if (isExplicitLanguageSwitch && !hasCropInSwitch) {
+      const switchGreetings: Record<string, string> = {
+        te: "నమస్కారం! నేను తెలుగులో మాట్లాడుతాను. మీ పంట పేరు, ఎంత పరిమాణం, మరియు ప్రయాణ సమయం చెప్పండి.",
+        hi: "नमस्ते! अब मैं हिंदी में बात करूँगा। अपनी फसल, मात्रा और मंडी की दूरी के बारे में बताएं।",
+        ta: "வணக்கம்! நான் தமிழில் பேசுகிறேன். உங்கள் பயிர், அளவு மற்றும் சந்தை தூரத்தை கூறுங்கள்.",
+        kn: "ನಮಸ್ಕಾರ! ನಾನು ಕನ್ನಡದಲ್ಲಿ ಮಾತನಾಡುತ್ತೇನೆ. ನಿಮ್ಮ ಬೆಳೆ, ಪ್ರಮಾಣ ಮತ್ತು ಸಾಗಾಣಿಕೆ ವಿವರಗಳನ್ನು ತಿಳಿಸಿ.",
+        en: "Switched to English. Tell me about your crop, harvest quantity, and travel days to market."
+      };
+
+      const ackReply = switchGreetings[activeLanguage] || switchGreetings.en;
+      updated.lastQuestion = ackReply;
+
+      return {
+        reply: ackReply,
+        updatedContext: updated,
+        readyForRecommendation: false,
+        provider: 'FOODPACK-AI Real-Time Voice Engine',
+        detectedLanguage: activeLanguage
+      };
     }
 
     // -------------------------------------------------------------
@@ -1140,26 +1242,12 @@ Return STRICT JSON ONLY:
       }
 
       selectedQuestionKey = 'consultation_followup';
-      updated.currentQuestionOptions = [
-        'Why this packaging?',
-        'Cheaper option unda?',
-        'Biodegradable option unda?',
-        'What if transit takes 12 hours?',
-        'Cold storage unte?'
-      ];
+      updated.currentQuestionOptions = undefined;
     }
     // SCENARIO 2: Crop / Produce is Missing
     else if (!hasCrop) {
       selectedQuestionKey = 'ask_crop';
-      updated.currentQuestionOptions = [
-        'Fresh Tomatoes',
-        'Ripening Mangoes',
-        'Potatoes / Onions',
-        'Fresh Strawberries',
-        'Button Mushrooms',
-        'Leafy Greens',
-        'Other'
-      ];
+      updated.currentQuestionOptions = undefined;
       if (activeLanguage === 'te') {
         reply = "నమస్కారం! మీరు ఏ తాజా పంటను ప్యాక్ చేయాలనుకుంటున్నారు? ఉదాహరణకు టమాటాలు, మామిడి, స్ట్రాబెర్రీలు లేదా ఆకుకూరలు?";
       } else if (activeLanguage === 'hi') {
@@ -1179,21 +1267,37 @@ Return STRICT JSON ONLY:
         explanation = `పంట కోత తర్వాత కూడా కాయలు శ్వాసక్రియ జరుపుతాయి మరియు తేమను విడుదల చేస్తాయి. ప్రయాణ సమయం మరియు వాహన ఉష్ణోగ్రత తెలిస్తేనే ప్యాకెట్‌కు ఎన్ని మైక్రో రంధ్రాలు కావాలో శాస్త్రీయంగా లెక్కించగలం.`;
       } else if (activeLanguage === 'hi') {
         explanation = `फसल कटने के बाद भी सांस लेती है और नमी छोड़ती है। यात्रा का समय और तापमान पता होने पर ही हम सही वेंटिलेशन छेद और सुरक्षा तय कर सकते हैं ताकि उपज खराब न हो।`;
+      } else if (activeLanguage === 'ta') {
+        explanation = `அறுவடைக்குப் பிறகும் பயிர்கள் சுவாசித்து ஈரப்பதத்தை வெளியிடுகின்றன. பயண நேரமும் வெப்பநிலையும் தெரிந்தால் மட்டுமே சரியான காற்றோட்டத்தை வடிவமைக்க முடியும்.`;
+      } else if (activeLanguage === 'kn') {
+        explanation = `ಕೊಯ್ಲಿನ ನಂತರವೂ ಬೆಳೆಗಳು ಉಸಿರಾಡುತ್ತವೆ ಮತ್ತು ತೇವಾಂಶ ಬಿಡುಗಡೆ ಮಾಡುತ್ತವೆ. ಪ್ರಯಾಣದ ಸಮಯ ಮತ್ತು ತಾಪಮಾನ ತಿಳಿದಿದ್ದರೆ ಮಾತ್ರ ಸೂಕ್ತ ಪ್ಯಾಕೇಜಿಂಗ್ ನಿರ್ಧರಿಸಬಹುದು.`;
       } else {
         explanation = `Fresh harvest respires and releases moisture vapor continuously. Knowing your transit duration and vehicle temperature lets our scientific engine calculate the exact ventilation perforations to prevent mold without drying out.`;
       }
 
       if (!hasDuration) {
         selectedQuestionKey = 'ask_duration';
-        updated.currentQuestionOptions = ['Within 6 Hours', '1 Day (Tomorrow)', '2-3 Days', '4+ Days', 'Other'];
+        updated.currentQuestionOptions = undefined;
         reply = activeLanguage === 'te'
           ? `${explanation} మార్కెట్‌కు చేరడానికి ఎంత సమయం లేదా ఎన్ని రోజులు పడుతుంది?`
+          : activeLanguage === 'hi'
+          ? `${explanation} मंडी तक पहुँचने में कितने दिन या घंटे लगेंगे?`
+          : activeLanguage === 'ta'
+          ? `${explanation} சந்தையை அடைய எத்தனை நாட்கள் அல்லது மணிநேரம் ஆகும்?`
+          : activeLanguage === 'kn'
+          ? `${explanation} ಮಾರುಕಟ್ಟೆಗೆ ತಲುಪಲು ಎಷ್ಟು ಸಮಯ ಅಥವಾ ದಿನ ಬೇಕಾಗುತ್ತದೆ?`
           : `${explanation} How long will the journey take until it reaches the market or buyer?`;
       } else if (!hasTemperature) {
         selectedQuestionKey = 'ask_temperature';
-        updated.currentQuestionOptions = ['Room Temp / Outside', 'Cold Storage (Refrigerated)', 'Hot Summer (>30°C)', 'Other'];
+        updated.currentQuestionOptions = undefined;
         reply = activeLanguage === 'te'
           ? `${explanation} రవాణాలో ఏసీ ఉందా లేదా సాధారణ వాహనమా?`
+          : activeLanguage === 'hi'
+          ? `${explanation} क्या गाड़ी में कोल्ड स्टोरेज है, या फिर सामान्य तापमान में ले जाया जाएगा?`
+          : activeLanguage === 'ta'
+          ? `${explanation} வாகனம் குளிரூட்டப்பட்டதா அல்லது சாதாரண வெப்பநிலையா?`
+          : activeLanguage === 'kn'
+          ? `${explanation} ವಾಹನದಲ್ಲಿ ಕೋಲ್ಡ್ ಸ್ಟೋರೇಜ್ ಇದೆಯೇ ಅಥವಾ ಸಾಮಾನ್ಯ ತಾಪಮಾನವೇ?`
           : `${explanation} Will the vehicle be refrigerated, or carried in normal ambient weather?`;
       } else {
         reply = explanation;
@@ -1202,7 +1306,7 @@ Return STRICT JSON ONLY:
     // SCENARIO 4: Crop Known, Missing Transit/Storage Duration
     else if (!hasDuration) {
       selectedQuestionKey = 'ask_duration';
-      updated.currentQuestionOptions = ['Within 6 Hours', '1 Day (Tomorrow)', '2-3 Days', '4+ Days', 'Other'];
+      updated.currentQuestionOptions = undefined;
       const cropName = updated.commodity;
       const ackCrop = updated.variety ? `${updated.variety} ${cropName}` : cropName;
       const ackDest = updated.destination ? ` to ${updated.destination}` : '';
@@ -1222,7 +1326,7 @@ Return STRICT JSON ONLY:
     // SCENARIO 5: Crop & Duration Known, Missing Temperature / Cold Chain
     else if (!hasTemperature) {
       selectedQuestionKey = 'ask_temperature';
-      updated.currentQuestionOptions = ['Normal Room Temp (No AC)', 'Cold Storage (Refrigerated 4°C)', 'Hot Weather (>30°C)', 'Other'];
+      updated.currentQuestionOptions = undefined;
 
       if (activeLanguage === 'te') {
         reply = `అర్థమైంది. రవాణా వాహనంలో ఏసీ లేదా కోల్డ్ స్టోరేజ్ ఉందా, లేదా సాధారణ వేడి వాతావరణంలో తీసుకెళ్తారా?`;
@@ -1239,11 +1343,15 @@ Return STRICT JSON ONLY:
     // SCENARIO 6: Missing Target Buyer (if not specified yet)
     else if (!updated.targetBuyer && !updated.confirmedFields.includes('buyer') && !updated.askedQuestionKeys.includes('ask_buyer') && (updated.turnCount || 0) < 4 && !wantsCalculationNow) {
       selectedQuestionKey = 'ask_buyer';
-      updated.currentQuestionOptions = ['Local Mandi', 'Wholesaler', 'Retailer', 'FPO / Co-op', 'Supermarket', 'Exporter', 'Other'];
+      updated.currentQuestionOptions = undefined;
       if (activeLanguage === 'te') {
         reply = `పంటను ఎవరికి పంపుతున్నారు? స్థానిక మండీకా, హోల్‌సేలర్‌కా, లేదా ఎగుమతికా?`;
       } else if (activeLanguage === 'hi') {
         reply = `फसल किसके पास भेजी जा रही है? स्थानीय मंडी, थोक व्यापारी, या सुपरमार्केट?`;
+      } else if (activeLanguage === 'ta') {
+        reply = `பயிரை யாருக்கு அனுப்புகிறீர்கள்? உள்ளூர் சந்தையா, மொத்த விற்பனையாளரா அல்லது ஏற்றுமதியா?`;
+      } else if (activeLanguage === 'kn') {
+        reply = `ಬೆಳೆಯನ್ನು ಯಾರಿಗೆ ಕಳುಹಿಸುತ್ತಿದ್ದೀರಿ? ಸ್ಥಳೀಯ ಮಂಡಿಗಾ, ಸಗಟು ವ್ಯಾಪಾರಿಗಾ ಅಥವಾ ರಫ್ತಿಗಾ?`;
       } else {
         reply = `Who are you sending it to? For example, local mandi, wholesaler, retailer, FPO, or exporter?`;
       }
@@ -1257,11 +1365,15 @@ Return STRICT JSON ONLY:
       !wantsCalculationNow
     ) {
       selectedQuestionKey = 'ask_preference';
-      updated.currentQuestionOptions = ['Economical / Low Cost', 'Balanced Standard', 'Eco-Friendly / Biodegradable', 'Reusable Plastic Crate', 'Other'];
+      updated.currentQuestionOptions = undefined;
       if (activeLanguage === 'te') {
         reply = `ప్రధాన వివరాలు లభించాయి. మీరు తక్కువ ఖర్చుతో కూడిన ప్యాకేజింగ్ కోరుకుంటున్నారా, లేదా పర్యావరణ అనుకూల బయో-మెటీరియల్ కావాలా?`;
       } else if (activeLanguage === 'hi') {
         reply = `मुख्य विवरण मिल गए हैं। क्या आप कम लागत वाली सामान्य पैकेजिंग चाहते हैं, या पर्यावरण-अनुकूल बायोडिग्रेडेबल सामग्री?`;
+      } else if (activeLanguage === 'ta') {
+        reply = `முக்கிய விவரங்கள் கிடைத்தன. குறைந்த விலை பேக்கேஜிங் விரும்புகிறீர்களா அல்லது சூழல் நட்பு மக்கும் பொருளா?`;
+      } else if (activeLanguage === 'kn') {
+        reply = `ಮುಖ್ಯ ವಿವರಗಳು ದೊರೆತಿವೆ. ನೀವು ಕಡಿಮೆ ವೆಚ್ಚದ ಪ್ಯಾಕೇಜಿಂಗ್ ಬಯಸುತ್ತೀರಾ ಅಥವಾ ಪರಿಸರ ಸ್ನೇಹಿ ವಸ್ತು ಬೇಕೇ?`;
       } else {
         reply = `I have the core transit conditions. Do you prefer economical low-cost packaging, or eco-friendly biodegradable materials?`;
       }
@@ -1271,13 +1383,7 @@ Return STRICT JSON ONLY:
       isReady = true;
       updated.recommendationDelivered = true;
       selectedQuestionKey = 'delivered_recommendation';
-      updated.currentQuestionOptions = [
-        'Why this packaging?',
-        'Cheaper option unda?',
-        'Biodegradable option unda?',
-        'What if transit takes 12 hours?',
-        'Cold storage unte?'
-      ];
+      updated.currentQuestionOptions = undefined;
     }
 
     if (selectedQuestionKey && !updated.askedQuestionKeys.includes(selectedQuestionKey)) {
@@ -1404,6 +1510,34 @@ Return STRICT JSON ONLY:
       if (lower.includes('banana')) return 'केले';
       if (lower.includes('carrot')) return 'गाजर';
       if (lower.includes('capsicum')) return 'शिमला मिर्च';
+      return commodity;
+    }
+    if (lang === 'ta') {
+      if (lower.includes('tomato')) return 'தக்காளி';
+      if (lower.includes('strawberr')) return 'ஸ்ட்ராபெர்ரி';
+      if (lower.includes('mango')) return 'மாம்பழம்';
+      if (lower.includes('mushroom')) return 'காளான்';
+      if (lower.includes('broccoli')) return 'ப்ரோக்கோலி';
+      if (lower.includes('onion')) return 'வெங்காயம்';
+      if (lower.includes('potato')) return 'உருளைக்கிழங்கு';
+      if (lower.includes('spinach') || lower.includes('greens')) return 'கீரைகள்';
+      if (lower.includes('grape')) return 'திராட்சை';
+      if (lower.includes('banana')) return 'வாழைப்பழம்';
+      if (lower.includes('carrot')) return 'கேரட்';
+      return commodity;
+    }
+    if (lang === 'kn') {
+      if (lower.includes('tomato')) return 'ಟೊಮೆಟೊ';
+      if (lower.includes('strawberr')) return 'ಸ್ಟ್ರಾಬೆರಿ';
+      if (lower.includes('mango')) return 'ಮಾವು';
+      if (lower.includes('mushroom')) return 'ಅಣಬೆ';
+      if (lower.includes('broccoli')) return 'ಬ್ರೊಕೊಲಿ';
+      if (lower.includes('onion')) return 'ಈರುಳ್ಳಿ';
+      if (lower.includes('potato')) return 'ಆಲೂಗಡ್ಡೆ';
+      if (lower.includes('spinach') || lower.includes('greens')) return 'ಹಸಿರು ಸೊಪ್ಪು';
+      if (lower.includes('grape')) return 'ದ್ರಾಕ್ಷಿ';
+      if (lower.includes('banana')) return 'ಬಾಳೆಹಣ್ಣು';
+      if (lower.includes('carrot')) return 'ಕ್ಯಾರೆಟ್';
       return commodity;
     }
     return commodity;
@@ -1613,6 +1747,8 @@ Return STRICT JSON ONLY:
     const durationText = ctx.transportDurationDays ? `${ctx.transportDurationDays} days` : `${ctx.transportDuration || 'several'} hours`;
     const durationTe = ctx.transportDurationDays ? `${ctx.transportDurationDays} రోజులు` : `${ctx.transportDuration || 'కొన్ని'} గంటలు`;
     const durationHi = ctx.transportDurationDays ? `${ctx.transportDurationDays} दिन` : `${ctx.transportDuration || 'कुछ'} घंटे`;
+    const durationTa = ctx.transportDurationDays ? `${ctx.transportDurationDays} நாட்கள்` : `${ctx.transportDuration || 'சில'} மணிநேரம்`;
+    const durationKn = ctx.transportDurationDays ? `${ctx.transportDurationDays} ದಿನಗಳು` : `${ctx.transportDuration || 'ಕೆಲವು'} ಗಂಟೆಗಳು`;
 
     // Dynamic "Why this packaging?" strictly grounded in actual engine output
     const whyEn = `I recommend this ${packageStructure} made of ${materialName} because your ${crop} is freshly harvested, the journey is ${durationText}, and you have ${isColdChain ? 'cold storage' : 'no cold storage (ambient weather)'}. The ${ventilationType} allows respiration heat and moisture to escape so condensation rot cannot form, while the package structure helps reduce crushing during transport.`;
@@ -1621,7 +1757,11 @@ Return STRICT JSON ONLY:
 
     const whyHi = `आपकी ${this.getLocalizedProduceName(crop, 'hi')} ताज़ा है, यात्रा का समय ${durationHi} है और ${isColdChain ? 'कोल्ड स्टोरेज उपलब्ध है' : 'कोल्ड स्टोरेज नहीं है'}। इसलिए ${materialName} का ${packageStructure} अनुशंसित है। इसका वेंटिलेशन गर्मी और पसीना बाहर निकालता है और मजबूत ढांचा फसल को दबने और सड़ने से बचाता है।`;
 
-    const spokenWhy = lang === 'te' ? whyTe : lang === 'hi' ? whyHi : whyEn;
+    const whyTa = `உங்கள் ${this.getLocalizedProduceName(crop, 'ta')} புதியது, பயண நேரம் ${durationTa} மற்றும் ${isColdChain ? 'குளிர்பதன வசதி உள்ளது' : 'சாதாரண வெப்பநிலை'}. எனவே ${materialName} ஆல் ஆன ${packageStructure} பரிந்துரைக்கப்படுகிறது. இது காற்றோட்டம் அளித்து அழுகல் மற்றும் நசுங்குவதைத் தடுக்கிறது.`;
+
+    const whyKn = `ನಿಮ್ಮ ${this.getLocalizedProduceName(crop, 'kn')} ತಾಜಾವಾಗಿದೆ, ಪ್ರಯಾಣ ಸಮಯ ${durationKn} ಮತ್ತು ${isColdChain ? 'ಕೋಲ್ಡ್ ಸ್ಟೋರೇಜ್ ಇದೆ' : 'ಸಾಮಾನ್ಯ ತಾಪಮಾನ'}. ಆದ್ದರಿಂದ ${materialName} ನ ${packageStructure} ಸೂಕ್ತವಾಗಿದೆ. ಇದು ಉಸಿರಾಟದ ಶಾಖವನ್ನು ಹೊರಹಾಕಿ ಕೊಳೆಯುವುದನ್ನು ತಪ್ಪಿಸುತ್ತದೆ.`;
+
+    const spokenWhy = lang === 'te' ? whyTe : lang === 'hi' ? whyHi : lang === 'ta' ? whyTa : lang === 'kn' ? whyKn : whyEn;
 
     return {
       material: {
